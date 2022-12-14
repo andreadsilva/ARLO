@@ -96,7 +96,7 @@ class OnlineRLPipeline(RLPipeline):
                     block_fully_instantiated = tmp_block.full_block_instantiation(info_MDP = self.get_info_MDP(latest_env=env))
                         
                 #there is never train_data in onlineRL
-                tmp_res = tmp_block.learn(train_data=None, env=env)      
+                tmp_res = tmp_block.learn(train_data=train_data, env=env)      
                     
                 #If the block was not learned successfully the pipeline learning process needs to finish here
                 if(not tmp_block.is_learn_successful):

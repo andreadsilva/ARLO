@@ -11,6 +11,7 @@ import copy
 
 from ARLO.block.block_output import BlockOutput
 from ARLO.block.model_generation import ModelGeneration
+from ARLO.block.model_generation_from_demonstration import ModelGenerationFromDemonstration
 from ARLO.block.model_generation_default import automatic_model_generation_default
 
                 
@@ -200,6 +201,8 @@ class AutoModelGeneration(ModelGeneration):
                 #starting_train_data_and_env has length 2 and it is made of train_data, env. Here since it is offline RL env may
                 #be None. 
                 starting_env = starting_train_data_and_env[1]
+                if(isinstance(tmp_tuner.block_to_opt, ModelGenerationFromDemonstration)):
+                    starting_train_data = starting_train_data_and_env[0]
                 
             #if the block can work on the provided environment spaces and pipeline I fully instantiate it, else i skip over it:
             is_consistent = tmp_tuner.block_to_opt.pre_learn_check(train_data=starting_train_data, env=starting_env)
