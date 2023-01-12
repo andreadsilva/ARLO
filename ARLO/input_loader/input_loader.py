@@ -168,6 +168,15 @@ class LoadSameTrainData(InputLoader):
                     
         return copied_train_data, None
 
+class LoadSameTrainDataAndEnv(LoadSameEnv):
+    
+    def get_input(self, blocks, n_inputs_to_load, train_data=None, env=None):
+        _, copied_envs =  super().get_input(blocks, n_inputs_to_load, train_data, env)
+        copied_train_data = []
+        for n in range(n_inputs_to_load):
+            new_train_data=copy.deepcopy(train_data)
+            copied_train_data.append(new_train_data)
+        return copied_train_data, copied_envs
 
 class LoadUniformSubSampleWithReplacement(InputLoader):
     """    

@@ -15,14 +15,15 @@ from mushroom_rl.core.core import Core
 from mushroom_rl.utils.parameters import Parameter
 from mushroom_rl.policy import EpsGreedy, OrnsteinUhlenbeckPolicy
 from mushroom_rl.utils.dataset import parse_dataset
-from mushroom_rl.algorithms.value.dqn import DQN
+from ARLO.block.algorithms import DQNFromDemonstration, DDPGFromDemonstration, SACFromDemonstration
+from ARLO.block.algorithms.ddpg_from_demonstration import DDPGFromDemonstration 
 from mushroom_rl.algorithms.actor_critic.deep_actor_critic import SAC, DDPG
 from mushroom_rl.approximators.parametric import TorchApproximator
 from mushroom_rl.utils.replay_memory import ReplayMemory
 from mushroom_rl.utils.parameters import LinearParameter
 from ARLO.block.block_output import BlockOutput
 from ARLO.block.model_generation import ModelGeneration
-from ARLO.block.pretraining import Pretraining, PretrainingValue
+from ARLO.block.pretraining import Pretraining, PretrainingValue, PretrainingAC
 from ARLO.hyperparameter.hyperparameter import Real, Integer, Categorical
 
 import torch
@@ -80,15 +81,15 @@ class ModelGenerationFromDemonstration(ModelGeneration):
         if(isinstance(starting_train_data_and_env, BlockOutput)):
             return BlockOutput(obj_name=self.obj_name)
         
-        #since this is a block from demonstration we have both expert_train_data, which is the first element of the list 
+        #since this is a block from demonstration we have both demo_train_data, which is the first element of the list 
         #starting_train_data_and_env, and an environment, which is the second element from the list
-        expert_train_data = starting_train_data_and_env[0]
+        demo_train_data = starting_train_data_and_env[0]
         starting_env = starting_train_data_and_env[1]
         
         """"""""""""""""""""""""
         """"""""""""""""""""""""""""""""""""
         self.logger.info(msg='Now learning the following block: '+self.pretrain_block.obj_name)   
-        can_proceed = self.pretrain_block.pre_learn_check(train_data=expert_train_data, env=env)
+        can_proceed = self.pretrain_block.pre_learn_check(train_data=demo_train_data, env=env)
                  
         if(not can_proceed):
             self.is_learn_successful = False
@@ -102,10 +103,10 @@ class ModelGenerationFromDemonstration(ModelGeneration):
         if(isinstance(self.pretrain_block, Pretraining) and (not self.pretrain_block.fully_instantiated)):
             block_fully_instantiated = self.pretrain_block.full_block_instantiation(info_MDP = self.info_MDP)
         
-        #expert_train_data is an object of Class TabularDataSet: so we pick the member dataset to feed to the Behavioral Cloning initialization
+        #demo_train_data is an object of Class TabularDataSet: so we pick the member dataset to feed to the Behavioral Cloning initialization
         #method, that initializes the policy and/or the Q function approximator from expert demonstrations         
         #      
-        tmp_res = self.pretrain_block.learn(train_data=expert_train_data)
+        tmp_res = self.pretrain_block.learn(train_data=demo_train_data)
 
         #If the block was not learned successfully the pipeline learning process needs to finish here
         if(not self.pretrain_block.is_learn_successful):
@@ -134,7 +135,7 @@ class ModelGenerationFromDemonstration(ModelGeneration):
         res = BlockOutput(obj_name=str(self.obj_name)+'_result', log_mode=self.log_mode,
                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity,                        
                               policy=self.construct_policy(policy=self.algo_object.policy, regressor_type=self.regressor_type,
-                              approximator=self.algo_object.approximator))
+                              approximator=self.get_pretrained_approximator()))
         if(self.deterministic_output_policy):
             #If this method is called then in the metric DiscountedReward you can use batch_eval
             res.make_policy_deterministic()
@@ -169,8 +170,11 @@ class ModelGenerationFromDemonstration(ModelGeneration):
             #sets torch number of threads
             torch.set_num_threads(self.n_jobs)
         
-        #create core object with starting_env:
+        #create core object with starting_env and set demonstration data:
         self._create_core(env=starting_env)
+        demos = ReplayMemory(0, len(demo_train_data.dataset))
+        demos.add(demo_train_data.dataset)
+        self.algo_object.set_demo_replay_memory(demos)
 
         #if the algorithm has a replay buffer i fill it randomly:
         if('initial_replay_size' in list(self.algo_params.keys())):
@@ -181,6 +185,9 @@ class ModelGenerationFromDemonstration(ModelGeneration):
            
 
         for n_epoch in range(self.algo_params['n_epochs'].current_actual_value):
+            key = 'n_episodes' if self.algo_params['n_episodes'].current_actual_value is not None else 'n_steps'
+            value = self.algo_params[key].current_actual_value
+            print('\nOnline learning epoch: ', n_epoch, key, value)
             self.logger.info(msg='Epoch: '+str(n_epoch))
             
             #learning step:
@@ -219,7 +226,11 @@ class ModelGenerationFromDemonstration(ModelGeneration):
         The method has a specific implementation for every "from demonstration" algorithm, since they all have a customized loss
         """
         raise NotImplementedError
-        
+    
+    @abstractmethod
+    def get_pretrained_approximator(self):
+        raise NotImplementedError
+
     def plot_dict_of_evals(self):       
         """
         This method plots and saves the dict_of_evals of the block.
@@ -311,30 +322,7 @@ class ModelGenerationFromDemonstration(ModelGeneration):
         #calls method save() implemented in base Class ModelGeneration of the instance copy_to_save
         super(ModelGenerationFromDemonstration, copy_to_save).save()
    
-
-class ModelGenerationMushroomOnlineValueBased(ModelGenerationFromDemonstration):
-
-
-    def initialize_agent(self):
-        pass
-        
-class ModelGenerationMushroomOnlinePolicyBased(ModelGenerationFromDemonstration):
-
-    def __init__():
-        pass
-    
-    def initialize_agent(self):
-        pass
-   
-class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased):
-    """
-    This Class implements a specific online model generation algorithm: DQN. This Class wraps the DQN method implemented in 
-    MushroomRL.
-    
-    cf. https://github.com/MushroomRL/mushroom-rl/blob/dev/mushroom_rl/algorithms/value/dqn/dqn.py
-    
-    This Class inherits from the Class ModelGenerationMushroomOnline.
-    """
+class ModelGenerationFromDemonstrationValueBased(ModelGenerationFromDemonstration):
     
     def __init__(self, eval_metric, obj_name, regressor_type='q_regressor', seeder=2, algo_params=None, log_mode='console', 
                  checkpoint_log_path=None, verbosity=3, n_jobs=1, job_type='process', deterministic_output_policy=True):
@@ -426,12 +414,13 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
         self.fully_instantiated = False               
         self.info_MDP = None 
         self.algo_object = None
+        self.algo_params_upon_instantiation = copy.deepcopy(self.algo_params)
+
         """"""
         self.pretrain_block = None
         """"""
-        self.algo_params_upon_instantiation = copy.deepcopy(self.algo_params)
 
-        self.model = DQN
+        self.model = DQNFromDemonstration
         
         self.core = None
                
@@ -479,7 +468,10 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
                     return q_acted
                     
         return Network
-    
+
+    def initialize_agent(self):
+        pass
+        
     def full_block_instantiation(self, info_MDP):
         """
         Parameters
@@ -582,7 +574,7 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
                       current_actual_value=1, range_of_values=[0.1, 1.5], to_mutate=True, seeder=self.seeder, 
                       log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
 
-            use_n_step = Categorical(hp_name='use_n_step', obj_name='critic_loss_'+str(self.model.__name__), 
+            use_n_step = Categorical(hp_name='use_n_step', obj_name='use_n_step_'+str(self.model.__name__), 
                                       current_actual_value=True, possible_values=[True, False])
 
             n_step_lookahead = Integer(hp_name='n_epochs_pretraining', current_actual_value=10, range_of_values=[5,15], to_mutate=True, 
@@ -628,6 +620,16 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
         self.logger.info(msg='\''+str(self.__class__.__name__)+'\' object fully instantiated!')
         self.fully_instantiated = True
         return True 
+
+class ModelGenerationMushroomOnlineDQNfD(ModelGenerationFromDemonstrationValueBased):
+    """
+    This Class implements a specific online model generation algorithm: DQN. This Class wraps the DQN method implemented in 
+    MushroomRL.
+    
+    cf. https://github.com/MushroomRL/mushroom-rl/blob/dev/mushroom_rl/algorithms/value/dqn/dqn.py
+    
+    This Class inherits from the Class ModelGenerationMushroomOnline.
+    """    
            
     def set_params(self, new_params):
         """
@@ -693,18 +695,19 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
             
             for tmp_key in list(new_params.keys()):
                 #i do not want to change mdp_info or policy                              
-                if(tmp_key in ['batch_size', 'target_update_frequency', 'replay_memory', 
+                if(tmp_key in ['target_update_frequency', 'replay_memory', 
                                'initial_replay_size', 'max_replay_size', 'clip_reward']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                 
-                if(tmp_key in ['approximator']):
+                if(tmp_key in ['batch_size', 'approximator']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                     tmp_pretrain_params.update({tmp_key:new_params[tmp_key]})
+                    if(tmp_key == 'batch_size'):
+                        tmp_structured_algo_params.update({'demo_batch_size': new_params[tmp_key]})
 
                 if(tmp_key in ['network', 'loss']):
                     tmp_structured_algo_params['approximator_params'].update({tmp_key: new_params[tmp_key]})
                     tmp_pretrain_params.update({tmp_key:new_params[tmp_key]})
-
 
                 if(tmp_key in ['class']):
                     tmp_structured_algo_params['approximator_params']['optimizer'].update({tmp_key: new_params[tmp_key]})  
@@ -714,7 +717,7 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
                     tmp_structured_algo_params['approximator_params']['optimizer']['params'].update({tmp_key: new_params[tmp_key]})                                                                   
                     tmp_pretrain_params.update({tmp_key:new_params[tmp_key]})
                 
-                if(tmp_key in ['n_epochs_pretraining', 'lambda1', 'lambda2', 'lambda3', 'use_n_step', 'n_step_lookahead']):
+                if(tmp_key in ['n_epochs_pretraining', 'lambda1', 'lambda2', 'lambda3', 'use_n_step', 'n_step_lookahead', 'margin']):
                     tmp_pretrain_params.update({tmp_key:new_params[tmp_key]})
             
             structured_dict_of_values = self._select_current_actual_value_from_hp_classes(params_structured_dict=
@@ -722,7 +725,7 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
             
             
             #i need to un-pack structured_dict_of_values for DQN  
-            self.algo_object = DQN(**structured_dict_of_values)
+            self.algo_object = DQNFromDemonstration(**structured_dict_of_values)
             
             # pretrain_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=tmp_structured_pretrain_params)
             self.pretrain_block = PretrainingValue(eval_metric = self.eval_metric, obj_name = self.obj_name+'_pretrain', algo_params=tmp_pretrain_params)
@@ -740,7 +743,8 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
                            'lambda2' : new_params['lambda2'],
                            'lambda3' : new_params['lambda3'],
                            'use_n_step' : new_params['use_n_step'],
-                           'n_step_lookahead' : new_params['n_step_lookahead']
+                           'n_step_lookahead' : new_params['n_step_lookahead'],
+                           'margin': new_params['margin']
                           }
             
             final_dict_of_params = {**final_dict_of_params, **dict_to_add}
@@ -763,16 +767,12 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationMushroomOnlineValueBased
     def initialize_agent(self):
         self.algo_object.approximator.set_weights(self.pretrain_block.q_approximator.get_weights())
         self.algo_object._update_target() 
-        
-        
-class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
-    """
-    This class implements a model generation algorithm: DDPGfD. The class initializes the policy
-    of the algorithm through behavioral cloning.
     
-    This class inherits from the class ModelGenerationFromDemonstration.
-    """
-    
+    def get_pretrained_approximator(self):
+        return self.pretrain_block.q_approximator
+        
+class ModelGenerationFromDemonstrationAC(ModelGenerationFromDemonstration):
+
     def __init__(self, eval_metric, obj_name, regressor_type='generic_regressor', seeder=2, algo_params=None, log_mode='console', 
                  checkpoint_log_path=None, verbosity=3, n_jobs=1, job_type='process', deterministic_output_policy=True):
         """        
@@ -786,19 +786,22 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                      'input_shape': self.info_MDP.observation_space.shape,
                      'n_actions': None, 
                      'output_shape': self.info_MDP.action_space.shape,
-                     'policy': OrnsteinUhlenbeckPolicy(sigma=0.2*np.ones(1), theta=0.15, dt=1e-2)
                      'actor_network': one hidden layer, 16 neurons, 
                      'actor_class': Adam,
-                     'actor_lr': 1e-3,
+                     'actor_lr': 3e-4,
                      'critic_network': one hidden layer, 16 neurons, 
                      'critic_class': Adam,
-                     'critic_lr': 1e-3,
+                     'critic_lr': 3e-4,
                      'loss': F.mse_loss,
-                     'batch_size': 100,
+                     'batch_size': 256,
                      'initial_replay_size': 50000,
                      'max_replay_size': 1000000,
-                     'tau': 0.005,     
-                     'policy_delay': 1,
+                     'warmup_transitions': 100,
+                     'tau': 0.005,
+                     'lr_alpha': 3e-4,
+                     'log_std_min': -20,
+                     'log_std_max': 2,
+                     'target_entropy': None,
                      'n_epochs': 10,
                      'n_steps': None,
                      'n_steps_per_fit': None,
@@ -810,9 +813,9 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                         
                         Note that if you want to use a 'q_regressor' then the picked regressor must be able to perform 
                         multi-target regression, as a single regressor is used for all actions. 
-                    
+                        
                         The default is 'generic_regressor'.
-        
+                        
         deterministic_output_policy: If this is True then the output policy will be rendered deterministic else if False nothing
                                      will be done. Note that the policy is made deterministic only at the end of the learn()
                                      method.
@@ -834,11 +837,11 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                                         objects.
                                         
         model: This is used in set_params in the generic Class ModelGenerationMushroomOnline. With this member we avoid 
-               re-writing for each Class inheriting from the Class ModelGenerationFromDemonstration the set_params method. 
-               In this Class this member equals to DDPG, which is the Class of MushroomRL implementing DDPG.
+               re-writing for each Class inheriting from the Class ModelGenerationMushroomOnline the set_params method. 
+               In this Class this member equals to SAC, which is the Class of MushroomRL implementing SAC.
         
         core: This is used to contain the Core object of MushroomRL needed to run online RL algorithms.
-    
+
         The other parameters and non-parameters members are described in the Class Block.
         """
         
@@ -860,14 +863,16 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
         self.algo_params = algo_params
         
         self.deterministic_output_policy = deterministic_output_policy
-    
+
         self.fully_instantiated = False               
         self.info_MDP = None 
         self.algo_object = None
         self.algo_params_upon_instantiation = copy.deepcopy(self.algo_params)
-    
-        self.model = DDPG
-        
+
+        self.model = SACFromDemonstration
+        """"""
+        self.pretrain_block = None
+        """"""
         self.core = None
         
         #seeds torch
@@ -925,7 +930,7 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                 nn.init.xavier_uniform_(self.hl0.weight, gain=nn.init.calculate_gain('relu'))
                 nn.init.xavier_uniform_(self.hl1.weight, gain=nn.init.calculate_gain('relu'))
                 nn.init.xavier_uniform_(self.hl2.weight, gain=nn.init.calculate_gain('relu'))
-             
+            
             def forward(self, state, **kwargs):
                 h = F.relu(self.hl0(torch.squeeze(state, 1).float()))
                 h = F.relu(self.hl1(h))
@@ -933,6 +938,88 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                 return self.hl2(h)
             
         return CriticNetwork, ActorNetwork
+
+    @abstractmethod
+    def model_specific_set_params(self, new_params, mdp_info, input_shape, output_shape, n_actions):
+        raise NotImplementedError
+        
+    def set_params(self, new_params):
+        """
+        Parameters
+        ----------
+        new_params: The new parameters to be used in the specific model generation algorithm. It must be a dictionary that does 
+                    not contain any dictionaries(i.e: all parameters must be at the same level).
+                                        
+                    We need to create the dictionary in the right form for MushroomRL. Then it needs to update self.algo_params. 
+                    Then it needs to update the object self.algo_object: to this we need to pass the actual values and not 
+                    the Hyperparameter objects. 
+                    
+                    We call _select_current_actual_value_from_hp_classes: to this method we need to pass the dictionary already in 
+                    its final form. 
+        Returns
+        -------
+        bool: This method returns True if new_params is set correctly, and False otherwise.
+        """
+            
+        if(new_params is not None):                
+            mdp_info = Categorical(hp_name='mdp_info', obj_name='mdp_info_'+str(self.model.__name__), 
+                                    current_actual_value=self.info_MDP)
+            
+            input_shape = Categorical(hp_name='input_shape', obj_name='input_shape_'+str(self.model.__name__), 
+                                        current_actual_value=self.info_MDP.observation_space.shape)
+            
+            if(self.regressor_type == 'action_regressor'):
+                output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
+                                            current_actual_value=(1,))
+                n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
+                                            current_actual_value=self.info_MDP.action_space.n)
+            elif(self.regressor_type == 'q_regressor'):
+                output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
+                                            current_actual_value=(self.info_MDP.action_space.n,))
+                n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
+                                            current_actual_value=self.info_MDP.action_space.n)
+            elif(self.regressor_type == 'generic_regressor'):
+                output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
+                                            current_actual_value=self.info_MDP.action_space.shape)
+                #to have a generic regressor I must not specify n_actions
+                n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
+                                            current_actual_value=None)
+                
+            tmp_structured_algo_params, dict_to_add = self.model_specific_set_params(new_params=new_params, mdp_info=mdp_info, 
+                                                                                        input_shape=input_shape, 
+                                                                                        output_shape=output_shape,
+                                                                                        n_actions=n_actions)
+                                    
+            final_dict_of_params = {**tmp_structured_algo_params, **dict_to_add}
+            
+            self.algo_params = final_dict_of_params
+
+            tmp_new_params = self.get_params()
+            
+            if(tmp_new_params is not None):
+                self.algo_params_upon_instantiation = copy.deepcopy(tmp_new_params)
+            else:
+                self.logger.error(msg='There was an error getting the parameters!')
+                return False
+
+            return True
+        else:
+            self.logger.error(msg='Cannot set parameters: \'new_params\' is \'None\'!')
+            return False    
+
+    def initialize_agent(self):
+        pass
+        
+    def get_pretrained_approximator(self):
+        return self.pretrain_block.actor_approximator
+             
+class ModelGenerationFromDemonstrationDDPGfD(ModelGenerationFromDemonstrationAC):
+    """
+    This class implements a model generation algorithm: DDPGfD. The class initializes the policy
+    of the algorithm through behavioral cloning.
+    
+    This class inherits from the class ModelGenerationFromDemonstration.
+    """
                 
     def full_block_instantiation(self, info_MDP):   
         """
@@ -1024,7 +1111,15 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                                          to_mutate=True, obj_name='n_episodes_per_fit_'+str(self.model.__name__), 
                                          seeder=self.seeder, log_mode=self.log_mode, 
                                          checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
-                
+            
+            n_epochs_pretraining = Integer(hp_name='n_epochs_pretraining', current_actual_value=20000, range_of_values=[5000,1000000], to_mutate=True, 
+                    obj_name='n_epochs_'+str(self.model.__name__), seeder=self.seeder, log_mode=self.log_mode, 
+                    checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+
+            lambda1 = Real(hp_name='lambda1', obj_name='lambda1_'+str(self.model.__name__), 
+                      current_actual_value=1, range_of_values=[0.1, 1.5], to_mutate=True, seeder=self.seeder, 
+                      log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+    
             dict_of_params = {'policy_class': policy_class,
                               'sigma': sigma,
                               'theta': theta,
@@ -1045,7 +1140,9 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                               'n_steps': n_steps,
                               'n_steps_per_fit': n_steps_per_fit,
                               'n_episodes': n_episodes,
-                              'n_episodes_per_fit': n_episodes_per_fit
+                              'n_episodes_per_fit': n_episodes_per_fit,
+                              'n_epochs_pretraining': n_epochs_pretraining,
+                              'lambda1': lambda1
                              }
             
             self.algo_params = dict_of_params
@@ -1063,64 +1160,42 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
         self.fully_instantiated = True
         return True 
     
-    def set_params(self, new_params):
-       """
-       Parameters
-       ----------
-       new_params: The new parameters to be used in the specific model generation algorithm. It must be a dictionary that does 
-                   not contain any dictionaries(i.e: all parameters must be at the same level).
-                                       
-                   We need to create the dictionary in the right form for MushroomRL. Then it needs to update self.algo_params. 
-                   Then it needs to update the object self.algo_object: to this we need to pass the actual values and not 
-                   the Hyperparameter objects. 
-                   
-                   We call _select_current_actual_value_from_hp_classes: to this method we need to pass the dictionary already in 
-                   its final form. 
-       Returns
-       -------
-       bool: This method returns True if new_params is set correctly, and False otherwise.
-       """
-          
-       if(new_params is not None):                
-           mdp_info = Categorical(hp_name='mdp_info', obj_name='mdp_info_'+str(self.model.__name__), 
-                                  current_actual_value=self.info_MDP)
-           
-           input_shape = Categorical(hp_name='input_shape', obj_name='input_shape_'+str(self.model.__name__), 
-                                     current_actual_value=self.info_MDP.observation_space.shape)
-           
-           if(self.regressor_type == 'action_regressor'):
-               output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
-                                          current_actual_value=(1,))
-               n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
-                                        current_actual_value=self.info_MDP.action_space.n)
-           elif(self.regressor_type == 'q_regressor'):
-               output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
-                                          current_actual_value=(self.info_MDP.action_space.n,))
-               n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
-                                        current_actual_value=self.info_MDP.action_space.n)
-           elif(self.regressor_type == 'generic_regressor'):
-               output_shape = Categorical(hp_name='output_shape', obj_name='output_shape_'+str(self.model.__name__), 
-                                          current_actual_value=self.info_MDP.action_space.shape)
-               #to have a generic regressor I must not specify n_actions
-               n_actions =  Categorical(hp_name='n_actions', obj_name='n_actions_'+str(self.model.__name__), 
-                                        current_actual_value=None)
-               
-           """tmp_structured_algo_params, dict_to_add = self.model_specific_set_params(new_params=new_params, mdp_info=mdp_info, 
-                                                                                    input_shape=input_shape, 
-                                                                                    output_shape=output_shape,
-                                                                                    n_actions=n_actions"""
-           
-           critic_input_shape = Categorical(hp_name='critic_input_shape', obj_name='critic_input_shape_'+str(self.model.__name__), 
+    def model_specific_set_params(self, mdp_info, new_params, input_shape, output_shape, n_actions):
+        """
+        Parameters
+        ----------
+        new_params: These are the new parameters to set in the RL algorithm. It is a flat dictionary containing objects of Class
+                    HyperParameter.
+        
+        mdp_info: This is an object of Class mushroom_rl.environment.MDPInfo: it contains the action space, the observation space
+                  and gamma and the horizon of the MDP.
+            
+        input_shape: The shape of the observation space.
+            
+        output_shape: The shape of the action space.
+        
+        n_actions: If the space is Discrete this is the number of actions.
+    
+        Returns
+        -------
+        tmp_structured_algo_params: A structured dictionary containing the parameters that are strictly part of the RL algorithm.
+            
+        dict_to_add: A flat dictionary containing parameters needed in the method learn() that are not strictly part of the RL
+                     algorithm, like the number of epochs and the number of episodes.
+        """        
+    
+        critic_input_shape = Categorical(hp_name='critic_input_shape', obj_name='critic_input_shape_'+str(self.model.__name__), 
                                          current_actual_value=(input_shape.current_actual_value[0]+
                                                                self.info_MDP.action_space.shape[0],))
                    
-           critic_output_shape = Categorical(hp_name='critic_output_shape', current_actual_value=(1,),
+        critic_output_shape = Categorical(hp_name='critic_output_shape', current_actual_value=(1,),
                                           obj_name='critic_output_shape_'+str(self.model.__name__))
         
-           tmp_structured_algo_params = {'mdp_info': mdp_info,
+        tmp_structured_algo_params = {'mdp_info': mdp_info,
                                       'actor_params': {'input_shape': input_shape,
                                                        'n_actions': n_actions,
-                                                       'output_shape': output_shape
+                                                       'output_shape': output_shape,
+                                                       'optimizer': {'class': None, 'params': {'lr': None}}
                                                       },
                                       'actor_optimizer': {'class': None, 'params': {'lr': None}}, 
                                       'critic_params': {'input_shape': critic_input_shape,
@@ -1128,167 +1203,411 @@ class ModelGenerationDDPGfD(ModelGenerationFromDemonstration):
                                                         'optimizer': {'class': None, 'params': {'lr': None}} 
                                                        }
                                      }
+        tmp_pretrain_params = { 'mdp_info': mdp_info,
+                                'input_shape': input_shape,
+                                'n_actions': n_actions,
+                                'output_shape': output_shape,
+                                'class': None,
+                                'lr': None 
+                                }
         
-           #either np.ones(1) or np.ones(self.info_MDP.action_space.shape[0])        
-           new_sigma = np.ones(1)*new_params['sigma'].current_actual_value
+        #either np.ones(1) or np.ones(self.info_MDP.action_space.shape[0])        
+        new_sigma = np.ones(1)*new_params['sigma'].current_actual_value
         
-           policy_params_dict = dict(sigma=new_sigma, theta=new_params['theta'].current_actual_value, 
+        policy_params_dict = dict(sigma=new_sigma, theta=new_params['theta'].current_actual_value, 
                                   dt=new_params['dt'].current_actual_value)
         
-           policy_params = Categorical(hp_name='policy_params', current_actual_value=policy_params_dict, 
+        policy_params = Categorical(hp_name='policy_params', current_actual_value=policy_params_dict, 
                                     obj_name='policy_params_'+str(self.model.__name__))
         
-           new_params.update({'policy_params': policy_params}) 
+        new_params.update({'policy_params': policy_params}) 
         
-           for tmp_key in list(new_params.keys()):
+        for tmp_key in list(new_params.keys()):
             #i do not want to change mdp_info                             
-               if(tmp_key in ['policy_class', 'policy_params', 'batch_size', 'initial_replay_size', 'max_replay_size', 'tau', 
-                           'policy_delay']):
-                   tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
-                                                  
-               if(tmp_key == 'loss'):
-                   tmp_structured_algo_params['critic_params'].update({tmp_key: new_params[tmp_key]})
-             
-               if(tmp_key == 'critic_network'):
-                   tmp_structured_algo_params['critic_params'].update({'network': new_params[tmp_key]})
+            if(tmp_key in ['policy_class', 'policy_params', 'batch_size', 'demo_batch_size', 'initial_replay_size', 'max_replay_size', 'tau', 
+                           'policy_delay', 'lambda1']):
+                tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})  
+
+            if(tmp_key == 'loss'):
+                tmp_structured_algo_params['critic_params'].update({tmp_key: new_params[tmp_key]})
+                # tmp_structured_algo_params['actor_params'].update({tmp_key: new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+
+            if(tmp_key == 'critic_network'):
+                tmp_structured_algo_params['critic_params'].update({'network': new_params[tmp_key]})
         
-               if(tmp_key == 'critic_class'):
-                   tmp_structured_algo_params['critic_params']['optimizer'].update({'class': new_params[tmp_key]})  
+            if(tmp_key == 'critic_class'):
+                tmp_structured_algo_params['critic_params']['optimizer'].update({'class': new_params[tmp_key]})  
                 
-               if(tmp_key == 'critic_lr'):
-                   tmp_structured_algo_params['critic_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                                       
+            if(tmp_key == 'critic_lr'):
+                tmp_structured_algo_params['critic_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                                       
                 
-               if(tmp_key == 'actor_network'):
-                   tmp_structured_algo_params['actor_params'].update({'network': new_params[tmp_key]}) 
-            
-               if(tmp_key == 'actor_class'):
-                   tmp_structured_algo_params['actor_optimizer'].update({'class': new_params[tmp_key]})  
+            if(tmp_key == 'actor_network'):
+                tmp_structured_algo_params['actor_params'].update({'network': new_params[tmp_key]}) 
+                tmp_pretrain_params.update({'network': new_params[tmp_key]})
+
+            if(tmp_key == 'actor_class'):
+                tmp_structured_algo_params['actor_optimizer'].update({'class': new_params[tmp_key]})  
+                # tmp_structured_algo_params['actor_params']['optimizer'].update({'class': new_params[tmp_key]})
+                tmp_pretrain_params.update({'class': new_params[tmp_key]})
+
+            if(tmp_key == 'actor_lr'):
+                tmp_structured_algo_params['actor_optimizer']['params'].update({'lr': new_params[tmp_key]})
+                # tmp_structured_algo_params['actor_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                   
+                tmp_pretrain_params.update({'lr': new_params[tmp_key]})
+
+            if(tmp_key == 'n_epochs_pretraining'):
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})   
                 
-               if(tmp_key == 'actor_lr'):
-                   tmp_structured_algo_params['actor_optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                   
-                   
-           structured_dict_of_values = self._select_current_actual_value_from_hp_classes(params_structured_dict=
+        structured_dict_of_values = self._select_current_actual_value_from_hp_classes(params_structured_dict=
                                                                                       tmp_structured_algo_params)
                     
-           #i need to un-pack structured_dict_of_values for DDPG  
-           self.algo_object = DDPG(**structured_dict_of_values)
-        
-           #now that i have created the DDPG object i can resolve the conflict between the 'actor_class', 'actor_lr', 
-           #'actor_network', 'critic_class', 'critic_lr' and 'critic_network'. To resolve it, i need to change their keys from 
-           #generic 'class', 'lr' and 'network', that are needed for MushroomRL, to 'actor_class', 'actor_lr', 'actor_network', 
-           #'critic_class', critic_lr' and 'critic_network':
-           tmp_structured_algo_params['critic_params']['critic_network'] = tmp_structured_algo_params['critic_params']['network'] 
-           del tmp_structured_algo_params['critic_params']['network']
-        
-           new_val = tmp_structured_algo_params['critic_params']['optimizer']['class'] 
-           tmp_structured_algo_params['critic_params']['optimizer']['critic_class'] = new_val
-           del tmp_structured_algo_params['critic_params']['optimizer']['class'] 
-            
-           new_val = tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
-           tmp_structured_algo_params['critic_params']['optimizer']['params']['critic_lr'] = new_val
-           del tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
-           
-           new_val = tmp_structured_algo_params['actor_params']['network'] 
-           tmp_structured_algo_params['actor_params']['actor_network'] = new_val
-           del tmp_structured_algo_params['actor_params']['network']
-                   
-           tmp_structured_algo_params['actor_optimizer']['actor_class'] = tmp_structured_algo_params['actor_optimizer']['class'] 
-           del tmp_structured_algo_params['actor_optimizer']['class'] 
-            
-           new_val = tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
-           tmp_structured_algo_params['actor_optimizer']['params']['actor_lr'] = new_val
-           del tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
-            
-           #delete policy_params: this is constructed new each time here:
-           del tmp_structured_algo_params['policy_params']
-                        
-           #add n_epochs, n_steps, n_steps_per_fit, n_episodes, n_episodes_per_fit, sigma, theta, dt:
-           dict_to_add = {'n_epochs': new_params['n_epochs'],
-                           'n_steps': new_params['n_steps'],
-                           'n_steps_per_fit': new_params['n_steps_per_fit'],
-                           'n_episodes': new_params['n_episodes'],
-                           'n_episodes_per_fit': new_params['n_episodes_per_fit'],
-                           'sigma': new_params['sigma'], 
-                           'theta': new_params['theta'], 
-                           'dt': new_params['dt']
-                         }
-           
-           final_dict_of_params = {**tmp_structured_algo_params, **dict_to_add}
-           
-           self.algo_params = final_dict_of_params
+        #i need to un-pack structured_dict_of_values for DDPG
+        self.algo_object = DDPGFromDemonstration(**structured_dict_of_values)
+        self.pretrain_block = PretrainingAC(eval_metric = self.eval_metric, obj_name = self.obj_name+'_pretrain', algo_params=tmp_pretrain_params)
 
-           tmp_new_params = self.get_params()
-           
-           if(tmp_new_params is not None):
-               self.algo_params_upon_instantiation = copy.deepcopy(tmp_new_params)
-           else:
-               self.logger.error(msg='There was an error getting the parameters!')
-               return False
+        #now that i have created the DDPG object i can resolve the conflict between the 'actor_class', 'actor_lr', 
+        #'actor_network', 'critic_class', 'critic_lr' and 'critic_network'. To resolve it, i need to change their keys from 
+        #generic 'class', 'lr' and 'network', that are needed for MushroomRL, to 'actor_class', 'actor_lr', 'actor_network', 
+        #'critic_class', critic_lr' and 'critic_network':
+        tmp_structured_algo_params['critic_params']['critic_network'] = tmp_structured_algo_params['critic_params']['network'] 
+        del tmp_structured_algo_params['critic_params']['network']
+        
+        new_val = tmp_structured_algo_params['critic_params']['optimizer']['class'] 
+        tmp_structured_algo_params['critic_params']['optimizer']['critic_class'] = new_val
+        del tmp_structured_algo_params['critic_params']['optimizer']['class'] 
+        
+        new_val = tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
+        tmp_structured_algo_params['critic_params']['optimizer']['params']['critic_lr'] = new_val
+        del tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
+        
+        new_val = tmp_structured_algo_params['actor_params']['network'] 
+        tmp_structured_algo_params['actor_params']['actor_network'] = new_val
+        del tmp_structured_algo_params['actor_params']['network']
+                
+        tmp_structured_algo_params['actor_optimizer']['actor_class'] = tmp_structured_algo_params['actor_optimizer']['class'] 
+        del tmp_structured_algo_params['actor_optimizer']['class'] 
+        
+        new_val = tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
+        tmp_structured_algo_params['actor_optimizer']['params']['actor_lr'] = new_val
+        del tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
+        
+        #delete policy_params: this is constructed new each time here:
+        del tmp_structured_algo_params['policy_params']
+                    
+        #add n_epochs, n_steps, n_steps_per_fit, n_episodes, n_episodes_per_fit, sigma, theta, dt:
+        dict_to_add = {'n_epochs': new_params['n_epochs'],
+                       'n_steps': new_params['n_steps'],
+                       'n_steps_per_fit': new_params['n_steps_per_fit'],
+                       'n_episodes': new_params['n_episodes'],
+                       'n_episodes_per_fit': new_params['n_episodes_per_fit'],
+                       'sigma': new_params['sigma'], 
+                       'theta': new_params['theta'], 
+                       'dt': new_params['dt'],
+                       'n_epochs_pretraining': new_params['n_epochs_pretraining'],
+                       'lambda1': new_params['lambda1']
+                      }
+        
+        return tmp_structured_algo_params, dict_to_add          
 
-           return True
-       else:
-           self.logger.error(msg='Cannot set parameters: \'new_params\' is \'None\'!')
-           return False           
+    def initialize_agent(self):
+        self.algo_object._actor_approximator.set_weights(self.pretrain_block.actor_approximator.get_weights())
+        self.algo_object._init_target(self.algo_object._actor_approximator,
+                          self.algo_object._target_actor_approximator)   
+
+class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
     
-    def _default_network(self):  
+    def full_block_instantiation(self, info_MDP):       
         """
-        This method creates a default CriticNetwork with 1 hidden layer and ReLU activation functions and a default ActorNetwork 
-        with 1 hidden layer and ReLU activation functions.
+        Parameters
+        ----------
+        info_MDP: This is an object of Class mushroom_rl.environment.MDPInfo. It contains the action and observation spaces, 
+                  gamma and the horizon of the MDP.
         
         Returns
         -------
-        CriticNetwork, ActorNetwork: the Class wrappers representing the default CriticNetwork and ActorNetwork.
+        This method returns True if the algo_params were set successfully, and False otherwise.
         """
         
-        class CriticNetwork(nn.Module):
-            def __init__(self, input_shape, output_shape, **kwargs):
-                super().__init__()
-        
-                n_input = input_shape[-1]
-                n_output = output_shape[0]
+        self.info_MDP = info_MDP
                 
-                self.hl0 = nn.Linear(n_input, 16)
-                self.hl1 = nn.Linear(16, 16)
-                self.hl2 = nn.Linear(16, n_output)
-                
-                nn.init.xavier_uniform_(self.hl0.weight, gain=nn.init.calculate_gain('relu'))
-                nn.init.xavier_uniform_(self.hl1.weight, gain=nn.init.calculate_gain('relu'))
-                nn.init.xavier_uniform_(self.hl2.weight, gain=nn.init.calculate_gain('relu'))
-        
-            def forward(self, state, action, **kwargs):
-                state_action = torch.cat((state.float(), action.float()), dim=1)
-                h = F.relu(self.hl0(state_action))
-                h = F.relu(self.hl1(h))
-                q = self.hl2(h)
-        
-                return torch.squeeze(q)
-        
-        class ActorNetwork(nn.Module):
-            def __init__(self, input_shape, output_shape,  **kwargs):
-                super(ActorNetwork, self).__init__()
-        
-                n_input = input_shape[-1]
-                n_output = output_shape[0]
-        
-                self.hl0 = nn.Linear(n_input, 16)
-                self.hl1 = nn.Linear(16, 16)
-                self.hl2 = nn.Linear(16, n_output)
-                
-                nn.init.xavier_uniform_(self.hl0.weight, gain=nn.init.calculate_gain('relu'))
-                nn.init.xavier_uniform_(self.hl1.weight, gain=nn.init.calculate_gain('relu'))
-                nn.init.xavier_uniform_(self.hl2.weight, gain=nn.init.calculate_gain('relu'))
+        if(self.algo_params is None):
+            critic, actor = self._default_network()
+            
+            #actor:
+            actor_network_mu = Categorical(hp_name='actor_network_mu', obj_name='actor_network_mu_'+str(self.model.__name__), 
+                                           current_actual_value=actor)
+            
+            actor_network_sigma = Categorical(hp_name='actor_network_sigma', 
+                                              obj_name='actor_network_sigma_'+str(self.model.__name__), 
+                                              current_actual_value=copy.deepcopy(actor))
              
-            def forward(self, state, **kwargs):
-                h = F.relu(self.hl0(torch.squeeze(state, 1).float()))
-                h = F.relu(self.hl1(h))
-            
-                return self.hl2(h)
-            
-        return CriticNetwork, ActorNetwork
+            actor_class = Categorical(hp_name='actor_class', obj_name='actor_class_'+str(self.model.__name__), 
+                                      current_actual_value=optim.Adam) 
 
+            actor_lr = Real(hp_name='actor_lr', obj_name='actor_lr_'+str(self.model.__name__), 
+                            current_actual_value=3e-4, range_of_values=[1e-5, 1e-3], to_mutate=True, seeder=self.seeder, 
+                            log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            
+            #critic:
+            critic_network = Categorical(hp_name='critic_network', obj_name='critic_network_'+str(self.model.__name__), 
+                                         current_actual_value=critic)
+            
+            critic_class = Categorical(hp_name='critic_class', obj_name='critic_class_'+str(self.model.__name__), 
+                                       current_actual_value=optim.Adam) 
+            
+            critic_lr = Real(hp_name='critic_lr', obj_name='critic_lr_'+str(self.model.__name__), 
+                             current_actual_value=3e-4, range_of_values=[1e-5, 1e-3], to_mutate=True, seeder=self.seeder, 
+                             log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            
+            critic_loss = Categorical(hp_name='loss', obj_name='loss_'+str(self.model.__name__), 
+                                      current_actual_value=F.mse_loss)
+                        
+            batch_size = Integer(hp_name='batch_size', obj_name='batch_size_'+str(self.model.__name__), 
+                                 current_actual_value=256, range_of_values=[8, 256], to_mutate=True, seeder=self.seeder, 
+                                 log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            
+            initial_replay_size = Integer(hp_name='initial_replay_size', current_actual_value=50000, 
+                                          obj_name='initial_replay_size_'+str(self.model.__name__))
+            
+            max_replay_size = Integer(hp_name='max_replay_size', current_actual_value=1000000, 
+                                      obj_name='max_replay_size_'+str(self.model.__name__))
+            
+            warmup_transitions = Integer(hp_name='warmup_transitions', current_actual_value=100, 
+                                         obj_name='warmup_transitions_'+str(self.model.__name__))
+            
+            tau = Real(hp_name='tau', current_actual_value=0.005, obj_name='tau_'+str(self.model.__name__))
+            
+            lr_alpha = Real(hp_name='lr_alpha', current_actual_value=3e-4, obj_name='lr_alpha_'+str(self.model.__name__))
+            
+            log_std_min = Real(hp_name='log_std_min', current_actual_value=-20, obj_name='log_std_min_'+str(self.model.__name__))
+            
+            log_std_max = Real(hp_name='log_std_max', current_actual_value=2, obj_name='log_std_max_'+str(self.model.__name__))
 
-    def initialize_agent(self, algo_object, demos, n_steps):
-        states, actions, _, _, _, _ = parse_dataset(demos.dataset)
-        for n in n_steps:
-            algo_object._actor_approximator.fit(states, actions)
-        algo_object._init_target(algo_object._target_actor_approximator, algo_object._actor_approximator)       
+            target_entropy = Real(hp_name='target_entropy', current_actual_value=None, 
+                                  obj_name='target_entropy_'+str(self.model.__name__))
+                              
+            n_epochs = Integer(hp_name='n_epochs', current_actual_value=10, range_of_values=[1,50], to_mutate=True, 
+                               obj_name='n_epochs_'+str(self.model.__name__), seeder=self.seeder, log_mode=self.log_mode, 
+                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            
+            n_steps = Integer(hp_name='n_steps', current_actual_value=None, to_mutate=False, 
+                              obj_name='n_steps_'+str(self.model.__name__), seeder=self.seeder, log_mode=self.log_mode, 
+                              checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            
+            n_steps_per_fit = Integer(hp_name='n_steps_per_fit', current_actual_value=None, to_mutate=False, 
+                                      obj_name='n_steps_per_fit_'+str(self.model.__name__), seeder=self.seeder, 
+                                      log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, 
+                                      verbosity=self.verbosity)
+            
+            n_episodes = Integer(hp_name='n_episodes', current_actual_value=500, range_of_values=[10,1000], to_mutate=True, 
+                                 obj_name='n_episodes_'+str(self.model.__name__), seeder=self.seeder, 
+                                 log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, 
+                                 verbosity=self.verbosity)
+            
+            n_episodes_per_fit = Integer(hp_name='n_episodes_per_fit', current_actual_value=50, range_of_values=[1,1000], 
+                                         to_mutate=True, obj_name='n_episodes_per_fit_'+str(self.model.__name__), 
+                                         seeder=self.seeder, log_mode=self.log_mode, 
+                                         checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            n_epochs_pretraining = Integer(hp_name='n_epochs_pretraining', current_actual_value=20000, range_of_values=[5000,1000000], to_mutate=True, 
+                    obj_name='n_epochs_'+str(self.model.__name__), seeder=self.seeder, log_mode=self.log_mode, 
+                    checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+
+            lambda1 = Real(hp_name='lambda1', obj_name='lambda1_'+str(self.model.__name__), 
+                      current_actual_value=1, range_of_values=[0.1, 1.5], to_mutate=True, seeder=self.seeder, 
+                      log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)    
+            
+            dict_of_params = {'actor_network_mu': actor_network_mu, 
+                              'actor_network_sigma': actor_network_sigma,
+                              'actor_class': actor_class, 
+                              'actor_lr': actor_lr,
+                              'critic_network': critic_network, 
+                              'critic_class': critic_class, 
+                              'critic_lr': critic_lr,           
+                              'loss': critic_loss,
+                              'batch_size': batch_size,
+                              'initial_replay_size': initial_replay_size,
+                              'max_replay_size': max_replay_size,
+                              'warmup_transitions': warmup_transitions,
+                              'tau': tau,
+                              'lr_alpha': lr_alpha,
+                              'log_std_min': log_std_min,
+                              'log_std_max': log_std_max,
+                              'target_entropy': target_entropy,
+                              'n_epochs': n_epochs,
+                              'n_steps': n_steps,
+                              'n_steps_per_fit': n_steps_per_fit,
+                              'n_episodes': n_episodes,
+                              'n_episodes_per_fit': n_episodes_per_fit,
+                              'n_epochs_pretraining': n_epochs_pretraining,
+                              'lambda1': lambda1
+                             }
+            
+            self.algo_params = dict_of_params
+        
+        is_set_param_success = self.set_params(new_params=self.algo_params)
+        
+        if(not is_set_param_success):
+             err_msg = 'There was an error setting the parameters of a'+'\''+str(self.__class__.__name__)+'\' object!'
+             self.logger.error(msg=err_msg)
+             self.fully_instantiated = False
+             self.is_learn_successful = False
+             return False
+        
+        self.logger.info(msg='\''+str(self.__class__.__name__)+'\' object fully instantiated!')
+        self.fully_instantiated = True
+        return True
+
+    def model_specific_set_params(self, new_params, mdp_info, input_shape, output_shape, n_actions):
+        """
+        Parameters
+        ----------
+        new_params: These are the new parameters to set in the RL algorithm. It is a flat dictionary containing objects of Class
+                    HyperParameter.
+        
+        mdp_info: This is an object of Class mushroom_rl.environment.MDPInfo: it contains the action space, the observation space
+                  and gamma and the horizon of the MDP.
+            
+        input_shape: The shape of the observation space.
+            
+        output_shape: The shape of the action space.
+        
+        n_actions: If the space is Discrete this is the number of actions.
+    
+        Returns
+        -------
+        tmp_structured_algo_params: A structured dictionary containing the parameters that are strictly part of the RL algorithm.
+            
+        dict_to_add: A flat dictionary containing parameters needed in the method learn() that are not strictly part of the RL
+                     algorithm, like the number of epochs and the number of episodes.
+        """        
+    
+        critic_input_shape = Categorical(hp_name='critic_input_shape', obj_name='critic_input_shape_'+str(self.model.__name__), 
+                                         current_actual_value=(input_shape.current_actual_value[0]+
+                                                               self.info_MDP.action_space.shape[0],))
+                   
+        critic_output_shape = Categorical(hp_name='critic_output_shape', current_actual_value=(1,),
+                                          obj_name='critic_output_shape_'+str(self.model.__name__))
+        
+        tmp_structured_algo_params = {'mdp_info': mdp_info,
+                                      'actor_mu_params': {'input_shape': input_shape,
+                                                          'n_actions': n_actions,
+                                                          'output_shape': output_shape,
+                                                          'loss': None,
+                                                          'optimizer': {'class':None, 'params':{'lr':None}}
+                                                         },
+                                      'actor_sigma_params': {'input_shape': input_shape,
+                                                             'n_actions': n_actions,
+                                                             'output_shape': output_shape
+                                                            },
+                                      'actor_optimizer': {'class': None, 'params': {'lr': None}}, 
+                                      'critic_params': {'input_shape': critic_input_shape,
+                                                        'output_shape': critic_output_shape,
+                                                        'optimizer': {'class': None, 'params': {'lr': None}} 
+                                                       }
+                                     }
+        tmp_pretrain_params = { 'mdp_info': mdp_info,
+                        'input_shape': input_shape,
+                        'n_actions': n_actions,
+                        'output_shape': output_shape,
+                        'class': None,
+                        'lr': None 
+                        }
+        
+        for tmp_key in list(new_params.keys()):
+            #i do not want to change mdp_info                             
+            if(tmp_key in ['initial_replay_size', 'max_replay_size', 'batch_size', 'demo_batch_size','warmup_transitions', 'tau', 'lr_alpha',
+                           'log_std_min', 'log_std_max', 'target_entropy']):
+                tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+            
+            if(tmp_key == 'lambda1'):
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+                tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
+
+            if(tmp_key == 'loss'):
+                tmp_structured_algo_params['critic_params'].update({tmp_key: new_params[tmp_key]})
+                # tmp_structured_algo_params['actor_mu_params'].update({tmp_key: new_params[tmp_key]}) 
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+
+            if(tmp_key == 'critic_network'):
+                tmp_structured_algo_params['critic_params'].update({'network': new_params[tmp_key]})
+        
+            if(tmp_key == 'critic_class'):
+                tmp_structured_algo_params['critic_params']['optimizer'].update({'class': new_params[tmp_key]})  
+                
+            if(tmp_key == 'critic_lr'):
+                tmp_structured_algo_params['critic_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                                       
+                
+            if(tmp_key == 'actor_network_mu'):
+                tmp_structured_algo_params['actor_mu_params'].update({'network': new_params[tmp_key]}) 
+                tmp_pretrain_params.update({'network': new_params[tmp_key]})
+
+            if(tmp_key == 'actor_network_sigma'):
+                tmp_structured_algo_params['actor_sigma_params'].update({'network': new_params[tmp_key]}) 
+                
+            if(tmp_key == 'actor_class'):
+                tmp_structured_algo_params['actor_optimizer'].update({'class': new_params[tmp_key]})  
+                # tmp_structured_algo_params['actor_mu_params']['optimizer'].update({'class': new_params[tmp_key]})  
+                tmp_pretrain_params.update({'class': new_params[tmp_key]})
+
+            if(tmp_key == 'actor_lr'):
+                tmp_structured_algo_params['actor_optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                   
+                # tmp_structured_algo_params['actor_mu_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})
+                tmp_pretrain_params.update({'lr': new_params[tmp_key]})
+
+            if(tmp_key == 'n_epochs_pretraining'):
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})  
+
+        structured_dict_of_values = self._select_current_actual_value_from_hp_classes(params_structured_dict=
+                                                                                      tmp_structured_algo_params)
+                    
+        #i need to un-pack structured_dict_of_values for SAC  
+        self.algo_object = SACFromDemonstration(**structured_dict_of_values)
+        self.pretrain_block = PretrainingAC(eval_metric = self.eval_metric, obj_name = self.obj_name+'_pretrain', algo_params=tmp_pretrain_params)
+
+        #now that i have created the SAC object i can resolve the conflict between the 'actor_class', 'actor_lr', 'actor_network', 
+        #'critic_class', 'critic_lr' and 'critic_network'. To resolve it, i need to change their keys from generic 'class' 
+        #'lr' and 'network', that are needed for MushroomRL, to 'actor_class', 'actor_lr', 'actor_network', 'critic_class', 
+        #critic_lr' and 'critic_network':
+        tmp_structured_algo_params['critic_params']['critic_network'] = tmp_structured_algo_params['critic_params']['network'] 
+        del tmp_structured_algo_params['critic_params']['network']
+        
+        new_val = tmp_structured_algo_params['critic_params']['optimizer']['class'] 
+        tmp_structured_algo_params['critic_params']['optimizer']['critic_class'] = new_val
+        del tmp_structured_algo_params['critic_params']['optimizer']['class'] 
+        
+        new_val = tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
+        tmp_structured_algo_params['critic_params']['optimizer']['params']['critic_lr'] = new_val
+        del tmp_structured_algo_params['critic_params']['optimizer']['params']['lr'] 
+        
+        new_val = tmp_structured_algo_params['actor_mu_params']['network'] 
+        tmp_structured_algo_params['actor_mu_params']['actor_network_mu'] = new_val
+        del tmp_structured_algo_params['actor_mu_params']['network']
+        
+        new_val = tmp_structured_algo_params['actor_sigma_params']['network'] 
+        tmp_structured_algo_params['actor_sigma_params']['actor_network_sigma'] = new_val
+        del tmp_structured_algo_params['actor_sigma_params']['network']
+        
+        tmp_structured_algo_params['actor_optimizer']['actor_class'] = tmp_structured_algo_params['actor_optimizer']['class'] 
+        del tmp_structured_algo_params['actor_optimizer']['class'] 
+        
+        new_val = tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
+        tmp_structured_algo_params['actor_optimizer']['params']['actor_lr'] = new_val
+        del tmp_structured_algo_params['actor_optimizer']['params']['lr'] 
+                    
+        #add n_epochs, n_steps, n_steps_per_fit, n_episodes, n_episodes_per_fit:
+        dict_to_add = {'n_epochs': new_params['n_epochs'],
+                       'n_steps': new_params['n_steps'],
+                       'n_steps_per_fit': new_params['n_steps_per_fit'],
+                       'n_episodes': new_params['n_episodes'],
+                       'n_episodes_per_fit': new_params['n_episodes_per_fit'],
+                       'n_epochs_pretraining': new_params['n_epochs_pretraining'],
+                       'lambda1': new_params['lambda1']
+                      }
+        
+        return tmp_structured_algo_params, dict_to_add 
+
+    def initialize_agent(self):
+        self.algo_object.policy._mu_approximator.set_weights(self.pretrain_block.actor_approximator.get_weights())

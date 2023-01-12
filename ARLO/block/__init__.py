@@ -8,3 +8,4 @@ from ARLO.block.model_generation_online import *
 from ARLO.block.model_generation_default import *
 from ARLO.block.model_generation_automatic import *
 from ARLO.block.model_generation_from_demonstration import *
+from ARLO.block.algorithms import *
