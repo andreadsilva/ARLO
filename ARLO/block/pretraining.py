@@ -321,7 +321,7 @@ class PretrainingValue(Pretraining):
             self.lambda2 = tmp_structured_algo_params['lambda2'].current_actual_value
             self.lambda3 = tmp_structured_algo_params['lambda3'].current_actual_value
             self.margin = tmp_structured_algo_params['margin'].current_actual_value
-            self.batch_size= tmp_structured_algo_params['demo_batch_size'].current_actual_value
+            self.batch_size= tmp_structured_algo_params['batch_size'].current_actual_value
             
             print('Params of : ', self.obj_name, '\nlr: ', lr, '\nl1: ', self.lambda1, '\nl2: ', self.lambda2, '\nl3: ', self.lambda3, '\nmargin: ', self.margin, '\nuse_n_steo: ', tmp_structured_algo_params['use_n_step'].current_actual_value, '\n\n')
 
@@ -554,4 +554,4 @@ class PretrainingAC(Pretraining):
         
     def update_model(self, dataset):
         state, action, _, _, _, _ = parse_dataset(dataset=dataset)
-        self.actor_approximator.fit(state, action.reshape(-1, 1))
+        self.actor_approximator.fit(state, action)

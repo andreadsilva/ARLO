@@ -1368,6 +1368,10 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
                                  current_actual_value=256, range_of_values=[8, 256], to_mutate=True, seeder=self.seeder, 
                                  log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
             
+            demo_batch_size = Integer(hp_name='batch_size', obj_name='demo_batch_size_'+str(self.model.__name__), 
+                                 current_actual_value=64, range_of_values=[8, 128], to_mutate=True, seeder=self.seeder, 
+                                 log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+
             initial_replay_size = Integer(hp_name='initial_replay_size', current_actual_value=50000, 
                                           obj_name='initial_replay_size_'+str(self.model.__name__))
             
@@ -1427,6 +1431,7 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
                               'critic_lr': critic_lr,           
                               'loss': critic_loss,
                               'batch_size': batch_size,
+                              'demo_batch_size': demo_batch_size,
                               'initial_replay_size': initial_replay_size,
                               'max_replay_size': max_replay_size,
                               'warmup_transitions': warmup_transitions,
@@ -1493,9 +1498,7 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
         tmp_structured_algo_params = {'mdp_info': mdp_info,
                                       'actor_mu_params': {'input_shape': input_shape,
                                                           'n_actions': n_actions,
-                                                          'output_shape': output_shape,
-                                                          'loss': None,
-                                                          'optimizer': {'class':None, 'params':{'lr':None}}
+                                                          'output_shape': output_shape
                                                          },
                                       'actor_sigma_params': {'input_shape': input_shape,
                                                              'n_actions': n_actions,
