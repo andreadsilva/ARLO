@@ -26,6 +26,7 @@ from ARLO.block.model_generation import ModelGeneration
 from ARLO.block.pretraining import Pretraining, PretrainingValue, PretrainingAC
 from ARLO.hyperparameter.hyperparameter import Real, Integer, Categorical
 
+from itertools import chain
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -134,8 +135,7 @@ class ModelGenerationFromDemonstration(ModelGeneration):
 
         res = BlockOutput(obj_name=str(self.obj_name)+'_result', log_mode=self.log_mode,
                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity,                        
-                              policy=self.construct_policy(policy=self.algo_object.policy, regressor_type=self.regressor_type,
-                              approximator=self.get_pretrained_approximator()))
+                              policy=self.construct_policy(policy=self.algo_object.policy, regressor_type=self.regressor_type))
         if(self.deterministic_output_policy):
             #If this method is called then in the metric DiscountedReward you can use batch_eval
             res.make_policy_deterministic()
@@ -185,9 +185,9 @@ class ModelGenerationFromDemonstration(ModelGeneration):
            
 
         for n_epoch in range(self.algo_params['n_epochs'].current_actual_value):
-            key = 'n_episodes' if self.algo_params['n_episodes'].current_actual_value is not None else 'n_steps'
-            value = self.algo_params[key].current_actual_value
-            print('\nOnline learning epoch: ', n_epoch, key, value)
+            # key = 'n_episodes' if self.algo_params['n_episodes'].current_actual_value is not None else 'n_steps'
+            # value = self.algo_params[key].current_actual_value
+            # print('\nOnline learning epoch: ', n_epoch, key, value)
             self.logger.info(msg='Epoch: '+str(n_epoch))
             
             #learning step:
@@ -695,15 +695,13 @@ class ModelGenerationMushroomOnlineDQNfD(ModelGenerationFromDemonstrationValueBa
             
             for tmp_key in list(new_params.keys()):
                 #i do not want to change mdp_info or policy                              
-                if(tmp_key in ['target_update_frequency', 'replay_memory', 
+                if(tmp_key in ['target_update_frequency', 'replay_memory', 'demo_batch_size',
                                'initial_replay_size', 'max_replay_size', 'clip_reward']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                 
                 if(tmp_key in ['batch_size', 'approximator']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                     tmp_pretrain_params.update({tmp_key:new_params[tmp_key]})
-                    if(tmp_key == 'batch_size'):
-                        tmp_structured_algo_params.update({'demo_batch_size': new_params[tmp_key]})
 
                 if(tmp_key in ['network', 'loss']):
                     tmp_structured_algo_params['approximator_params'].update({tmp_key: new_params[tmp_key]})
@@ -1419,9 +1417,13 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
                     checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
 
             lambda1 = Real(hp_name='lambda1', obj_name='lambda1_'+str(self.model.__name__), 
-                      current_actual_value=1, range_of_values=[0.1, 1.5], to_mutate=True, seeder=self.seeder, 
+                      current_actual_value=5, range_of_values=[1, 10], to_mutate=True, seeder=self.seeder, 
                       log_mode=self.log_mode, checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)    
             
+            pretrain_critic = Categorical(hp_name='pretrain_critic', current_actual_value=False, to_mutate=False,
+                                        obj_name='pretrain_critic_'+str(self.model.__name__), seeder=self.seeder, log_mode=self.log_mode,
+                                        checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+
             dict_of_params = {'actor_network_mu': actor_network_mu, 
                               'actor_network_sigma': actor_network_sigma,
                               'actor_class': actor_class, 
@@ -1446,7 +1448,8 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
                               'n_episodes': n_episodes,
                               'n_episodes_per_fit': n_episodes_per_fit,
                               'n_epochs_pretraining': n_epochs_pretraining,
-                              'lambda1': lambda1
+                              'lambda1': lambda1,
+                              'pretrain_critic': pretrain_critic
                              }
             
             self.algo_params = dict_of_params
@@ -1510,57 +1513,62 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
                                                         'optimizer': {'class': None, 'params': {'lr': None}} 
                                                        }
                                      }
-        tmp_pretrain_params = { 'mdp_info': mdp_info,
-                        'input_shape': input_shape,
+        tmp_pretrain_params = { 'input_shape': input_shape,
                         'n_actions': n_actions,
-                        'output_shape': output_shape,
-                        'class': None,
-                        'lr': None 
+                        'output_shape': output_shape
                         }
         
         for tmp_key in list(new_params.keys()):
             #i do not want to change mdp_info                             
-            if(tmp_key in ['initial_replay_size', 'max_replay_size', 'batch_size', 'demo_batch_size','warmup_transitions', 'tau', 'lr_alpha',
+            if(tmp_key in ['initial_replay_size', 'max_replay_size', 'lambda1','warmup_transitions', 'tau', 'lr_alpha',
                            'log_std_min', 'log_std_max', 'target_entropy']):
                 tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
-                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
             
-            if(tmp_key == 'lambda1'):
-                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+            if(tmp_key in ['batch_size', 'demo_batch_size']):
                 tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
 
             if(tmp_key == 'loss'):
                 tmp_structured_algo_params['critic_params'].update({tmp_key: new_params[tmp_key]})
-                # tmp_structured_algo_params['actor_mu_params'].update({tmp_key: new_params[tmp_key]}) 
                 tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
 
             if(tmp_key == 'critic_network'):
                 tmp_structured_algo_params['critic_params'].update({'network': new_params[tmp_key]})
-        
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+
             if(tmp_key == 'critic_class'):
                 tmp_structured_algo_params['critic_params']['optimizer'].update({'class': new_params[tmp_key]})  
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
                 
             if(tmp_key == 'critic_lr'):
                 tmp_structured_algo_params['critic_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                                       
-                
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+
+            if(tmp_key == 'l2_critic'):
+                tmp_structured_algo_params['critic_params']['optimizer']['params'].update({'weight_decay': new_params[tmp_key]})                                                                                       
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})                
+
             if(tmp_key == 'actor_network_mu'):
                 tmp_structured_algo_params['actor_mu_params'].update({'network': new_params[tmp_key]}) 
-                tmp_pretrain_params.update({'network': new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
 
             if(tmp_key == 'actor_network_sigma'):
                 tmp_structured_algo_params['actor_sigma_params'].update({'network': new_params[tmp_key]}) 
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
                 
             if(tmp_key == 'actor_class'):
                 tmp_structured_algo_params['actor_optimizer'].update({'class': new_params[tmp_key]})  
-                # tmp_structured_algo_params['actor_mu_params']['optimizer'].update({'class': new_params[tmp_key]})  
-                tmp_pretrain_params.update({'class': new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
 
             if(tmp_key == 'actor_lr'):
                 tmp_structured_algo_params['actor_optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                   
-                # tmp_structured_algo_params['actor_mu_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})
-                tmp_pretrain_params.update({'lr': new_params[tmp_key]})
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
+            
+            if(tmp_key == 'l2_actor'):
+                tmp_structured_algo_params['actor_optimizer']['params'].update({'weight_decay': new_params[tmp_key]})                                                                   
+                tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})
 
-            if(tmp_key == 'n_epochs_pretraining'):
+            if(tmp_key == 'n_epochs_pretraining', 'pretrain_critic'):
                 tmp_pretrain_params.update({tmp_key: new_params[tmp_key]})  
 
         structured_dict_of_values = self._select_current_actual_value_from_hp_classes(params_structured_dict=
@@ -1613,4 +1621,12 @@ class ModelGenerationFromDemonstrationSAC(ModelGenerationFromDemonstrationAC):
         return tmp_structured_algo_params, dict_to_add 
 
     def initialize_agent(self):
-        self.algo_object.policy._mu_approximator.set_weights(self.pretrain_block.actor_approximator.get_weights())
+        #self.algo_object.policy._mu_approximator.set_weights(self.pretrain_block.actor_approximator.get_weights())
+        self.algo_object.policy = self.pretrain_block.policy
+        mu_params = self.pretrain_block.mu_approximator.model.network.parameters()
+        sigma_params = self.pretrain_block.sigma_approximator.model.network.parameters()
+        self.algo_object._update_optimizer_parameters(chain(mu_params, sigma_params))
+
+        self.algo_object._critic_approximator = self.pretrain_block.critic_approximator
+        self.algo_object._init_target(self.algo_object._critic_approximator,
+                          self.algo_object._target_critic_approximator)

@@ -65,7 +65,6 @@ class SACFromDemonstration(SAC):
 
     def _bc_loss(self, state, action):
         pred_action, _ = self.policy.compute_action_and_log_prob_t(state)
-        # pred_action = pred_action.reshape(-1, 1)
         return torch.mean((pred_action.reshape(-1, self.mdp_info.action_space.shape[0])- torch.FloatTensor(action.reshape(-1,self.mdp_info.action_space.shape[0]))).pow(2))
 
     def set_demo_replay_memory(self, demo_replay_memory):

@@ -13,17 +13,18 @@ from abc import abstractmethod
 import copy
 import numpy as np
 import random
-from mushroom_rl.policy import EpsGreedy
-from mushroom_rl.algorithms.value.dqn import DQN
+from mushroom_rl.algorithms.actor_critic.deep_actor_critic.sac import SACPolicy
 from mushroom_rl.utils.dataset import parse_dataset
 from mushroom_rl.approximators.regressor import Regressor
 from mushroom_rl.approximators.parametric.torch_approximator import TorchApproximator
 from ARLO.block.block import Block, BlockOutput
 from ARLO.dataset.n_step_transition_buffer import NStepTransitionBuffer
-from ARLO.hyperparameter.hyperparameter import Real, Integer, Categorical
+from ARLO.hyperparameter.hyperparameter import Categorical, Real, Integer
 from ARLO.dataset.n_step_transition_buffer import get_n_step_info_from_demo
 import torch
 from torch.optim import Adam
+from itertools import chain
+
 
 
 class Pretraining(Block):
@@ -50,7 +51,7 @@ class Pretraining(Block):
 
     def pretrain(self, n_epochs):
     
-        print("[INFO] Pre-Train %d steps." % n_epochs)
+        # print("[INFO] Pre-Train %d steps." % n_epochs)
         # indexes = np.random.random_integers(0, self.n_step_buffer.buffer_size, self.batch_size)
         dataset = self.demo_buffer
         for i in range(n_epochs):
@@ -293,7 +294,7 @@ class PretrainingValue(Pretraining):
 
             for tmp_key in list(new_params.keys()):
                 #i do not want to change mdp_info or policy
-                if(tmp_key in ['demo_batch_size', 'approximator', 'n_epochs_pretraining', 'input_shape', 'output_shape', 'lambda1', 'lambda2', 'lambda3', 'use_n_step', 'n_step_lookahead', 'margin']):
+                if(tmp_key in ['batch_size', 'approximator', 'n_epochs_pretraining', 'input_shape', 'output_shape', 'lambda1', 'lambda2', 'lambda3', 'use_n_step', 'n_step_lookahead', 'margin']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                     if(tmp_key=='approximator', 'input_shape', 'output_shape'):
                         regressor_dict.update({tmp_key: new_params[tmp_key]})
@@ -302,7 +303,6 @@ class PretrainingValue(Pretraining):
                     regressor_dict.update({tmp_key: new_params[tmp_key]})
                 if(tmp_key in ['class']):
                     tmp_structured_algo_params['approximator_params']['optimizer'].update({tmp_key: new_params[tmp_key]})  
-                    regressor_dict.update({'optimizer': new_params[tmp_key]})
                 if(tmp_key in ['lr']):
                     tmp_structured_algo_params['approximator_params']['optimizer']['params'].update({tmp_key: new_params[tmp_key]})                                                                   
                     regressor_dict.update({tmp_key: new_params[tmp_key]})
@@ -411,6 +411,7 @@ class PretrainingAC(Pretraining):
         self.actor_approximator = None
         self.optimizer = None
         self.demo_buffer = None
+        self.model = SACPolicy
         self.pipeline_type='online'
         self.works_on_online_rl = True
         self.works_on_offline_rl = False
@@ -443,6 +444,7 @@ class PretrainingAC(Pretraining):
         #this seeding is needed for the policy of MushroomRL. Indeed the evaluation at the start of the learn method is done 
         #using the policy and in the method draw_action, np.random is called! 
         np.random.seed(self.seeder)
+        random.seed(self.seeder)
 
     def full_block_instantiation(self, info_MDP):
         
@@ -454,14 +456,24 @@ class PretrainingAC(Pretraining):
                               obj_name='n_epochs_pretraining'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
             dict_of_params.update({ 'n_epochs_pretraining': n_epochs_pretraining})
-        if('lambda1' not in params.keys()):
-            lambda1 = Real(hp_name='lambda1', current_actual_value=0.2, to_mutate=False, 
-                              obj_name='lambda1'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
-                              checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
-            dict_of_params.update({ 'lambda1': lambda1})
-
-        self.algo_params = {**params, **dict_of_params}
         
+        if('l2_actor' not in params.keys()):
+            l2_actor = Real(hp_name='l2_actor', current_actual_value=1e-4, to_mutate=False, 
+                              obj_name='l2_actor'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
+                              checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            dict_of_params.update({ 'l2_actor': l2_actor})
+        
+        if('l2_critic' not in params.keys()):
+            l2_critic = Real(hp_name='l2_critic', current_actual_value=1e-4, to_mutate=False, 
+                              obj_name='l2_critic'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
+                              checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            dict_of_params.update({ 'l2_critic': l2_critic})
+        if('pretrain_critic' not in params.keys()):
+            pretrain_critic = Categorical(hp_name='pretrain_critic', current_actual_value=False, to_mutate=False,
+                                        obj_name='pretrain_critic', seeder=self.seeder, log_mode=self.log_mode,
+                                        checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            dict_of_params.update({'pretrain_critic': pretrain_critic})
+        self.algo_params = {**params, **dict_of_params}
         is_set_param_success = self.set_params(new_params=self.algo_params)
 
         if(not is_set_param_success):
@@ -494,48 +506,67 @@ class PretrainingAC(Pretraining):
         """
 
         if(new_params is not None):
+            
+            critic_input_shape = Categorical(hp_name='input_shape', obj_name='input_shape_'+str(self.model.__name__), 
+                                        current_actual_value=(self.info_MDP.observation_space.shape[0]+self.info_MDP.action_space.shape[0],))
+            critic_output_shape = Categorical(hp_name='critic_output_shape', current_actual_value=(1,),
+                                              obj_name='critic_output_shape_'+str(self.model.__name__))
 
             tmp_structured_algo_params = {  'mdp_info': self.info_MDP,
                                             'approximator_params': { 'optimizer': {'class': None, 'params':{'lr': None}} }
                                         }
-            regressor_dict = {'optimizer': {'class': None, 'params':{'lr':None}}}
+            mu_regressor_dict = { }
+            sigma_regressor_dict = { }
+            critic_regressor_dict = {'optimizer': {'class': None, 'params':{'lr':None}},
+                                    'input_shape': critic_input_shape, 'output_shape': critic_output_shape}
 
             for tmp_key in list(new_params.keys()):
                 #i do not want to change mdp_info or policy
-                if(tmp_key in ['batch_size', 'n_epochs_pretraining','input_shape', 'output_shape', 'lambda1']):
+                if(tmp_key in ['batch_size','demo_batch_size', 'n_epochs_pretraining', 'l2_actor', 'pretrain_critic']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
-                    if(tmp_key in ['input_shape', 'output_shape']):
-                        regressor_dict.update({tmp_key :new_params[tmp_key]})
-                if(tmp_key in ['network', 'loss', 'n_actions']):
-                    tmp_structured_algo_params['approximator_params'].update({tmp_key: new_params[tmp_key]})
-                    regressor_dict.update({tmp_key: new_params[tmp_key]})
-                if(tmp_key in ['class']):
+                if(tmp_key in ['input_shape', 'output_shape', 'n_actions']):
+                    mu_regressor_dict.update({tmp_key: new_params[tmp_key]})
+                    sigma_regressor_dict.update({tmp_key: new_params[tmp_key]})
+                if(tmp_key == 'actor_network_mu'):
+                    mu_regressor_dict.update({'network': new_params[tmp_key]})
+                if(tmp_key == 'actor_network_sigma'):
+                    sigma_regressor_dict.update({'network': new_params[tmp_key]})
+                if(tmp_key == 'actor_class'):
                     tmp_structured_algo_params['approximator_params']['optimizer'].update({tmp_key: new_params[tmp_key]})  
-                    regressor_dict['optimizer'].update({tmp_key: new_params[tmp_key]})
-                if(tmp_key in ['lr']):
-                    tmp_structured_algo_params['approximator_params']['optimizer']['params'].update({tmp_key: new_params[tmp_key]})                                                                   
-                    regressor_dict['optimizer']['params'].update({tmp_key: new_params[tmp_key]})
-
-            regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=regressor_dict)
-
+                if(tmp_key == 'actor_lr'):
+                    tmp_structured_algo_params['approximator_params']['optimizer']['params'].update({'lr': new_params[tmp_key]})                                                                   
+                if(tmp_key == 'loss'):
+                    critic_regressor_dict.update({tmp_key: new_params[tmp_key]})
+                if(tmp_key == 'critic_network'):
+                    critic_regressor_dict.update({'network': new_params[tmp_key]})
+                if(tmp_key == 'critic_class'):
+                    critic_regressor_dict['optimizer'].update({'class': new_params[tmp_key]})
+                if(tmp_key == 'critic_lr'):
+                    critic_regressor_dict['optimizer']['params'].update({'lr': new_params[tmp_key]})
+                if(tmp_key == 'l2_critic'):
+                    critic_regressor_dict['optimizer']['params'].update({'weight_decay': new_params[tmp_key]})
+                
+            mu_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=mu_regressor_dict)
+            sigma_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=sigma_regressor_dict)
+            critic_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=critic_regressor_dict)
             #i need to un-pack structured_dict_of_values for the regressor  
-            self.actor_approximator = Regressor(TorchApproximator, **regressor_params)
-            self.target_approximator = Regressor(TorchApproximator, **regressor_params)
-            self.model=self.actor_approximator._impl.model
+            self.mu_approximator = Regressor(TorchApproximator, **mu_regressor_params)
+            self.sigma_approximator = Regressor(TorchApproximator, **sigma_regressor_params)
+            self.critic_approximator = Regressor(TorchApproximator, **critic_regressor_params, n_models=2)
+            policy_parameters = chain(self.mu_approximator.model.network.parameters(),
+                                  self.sigma_approximator.model.network.parameters())
+                
+            self.policy = SACPolicy(self.mu_approximator, self.sigma_approximator, self.info_MDP.action_space.low, self.info_MDP.action_space.high, -20,3)
 
             #setting all the pretrain parameters (class and lr to create regressor, lambdas as losses' weights)
-            optimizer_class = tmp_structured_algo_params['approximator_params']['optimizer']['class'].current_actual_value
+            actor_optimizer_class = tmp_structured_algo_params['approximator_params']['optimizer']['actor_class'].current_actual_value
             lr = tmp_structured_algo_params['approximator_params']['optimizer']['params']['lr'].current_actual_value
-            self.lambda1 = tmp_structured_algo_params['lambda1'].current_actual_value
-            self.batch_size = tmp_structured_algo_params['batch_size'].current_actual_value
-            
-            print('Params of : ', self.obj_name, '\nlr: ', lr, '\nl1: ', self.lambda1, '\n\n')
-
-            # if(tmp_structured_algo_params['use_n_step'].current_actual_value):
-            #     self.use_n_step = True
-            #     self.n_step_lookahead = tmp_structured_algo_params['n_step_lookahead'].current_actual_value
-            
-            self.optimizer = optimizer_class(self.actor_approximator.model.network.parameters(), lr=lr, weight_decay=self.lambda1)
+            self.l2_actor = tmp_structured_algo_params['l2_actor'].current_actual_value
+            self.batch_size = tmp_structured_algo_params['batch_size'].current_actual_value + tmp_structured_algo_params['demo_batch_size'].current_actual_value 
+            self.pretrain_critic = tmp_structured_algo_params['pretrain_critic'].current_actual_value
+            print('Params of pretraining (actor): ', self.obj_name, '\nlr: ', lr, '\nl2: ', self.l2_actor, '\n\n')
+ 
+            self.optimizer = actor_optimizer_class(policy_parameters, lr=lr, weight_decay=self.l2_actor)
             
             self.algo_params = tmp_structured_algo_params
             
@@ -553,5 +584,39 @@ class PretrainingAC(Pretraining):
             return False
         
     def update_model(self, dataset):
-        state, action, _, _, _, _ = parse_dataset(dataset=dataset)
-        self.actor_approximator.fit(state, action)
+        state, action, reward, next_state, absorbing, _ = parse_dataset(dataset=dataset)
+        action_new, _ = self.policy.compute_action_and_log_prob_t(state=state)
+        loss = torch.mean((action_new-torch.FloatTensor(action)).pow(2))
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        if(self.pretrain_critic):
+            q_next = self._next_q(next_state, absorbing)
+            q = reward + self.info_MDP.gamma * q_next
+            self.critic_approximator.fit(state, action, q)
+            
+            action_new, _ = self.policy.compute_action_and_log_prob_t(state=state)
+            actor_loss = self._loss(state, action_new)
+            self.optimizer.zero_grad()
+            actor_loss.backward()
+            self.optimizer.step()
+
+    def _next_q(self, next_state, absorbing):
+        a, log_prob_next = self.policy.compute_action_and_log_prob(next_state)
+
+        q = self.critic_approximator.predict(
+            next_state, a, prediction='min') - .2 * log_prob_next
+        q *= 1 - absorbing
+
+        return q
+
+    def _loss(self, state, action_new):
+        q_0 = self.critic_approximator(state, action_new,
+                                        output_tensor=True, idx=0)
+        q_1 = self.critic_approximator(state, action_new,
+                                        output_tensor=True, idx=1)
+
+        q = torch.min(q_0, q_1)
+
+        return - q.mean()
