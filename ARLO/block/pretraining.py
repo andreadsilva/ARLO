@@ -18,6 +18,7 @@ from mushroom_rl.utils.dataset import parse_dataset
 from mushroom_rl.approximators.regressor import Regressor
 from mushroom_rl.approximators.parametric.torch_approximator import TorchApproximator
 from ARLO.block.block import Block, BlockOutput
+from ARLO.block.algorithms import DDPGFromDemonstration, SACFromDemonstration
 from ARLO.dataset.n_step_transition_buffer import NStepTransitionBuffer
 from ARLO.hyperparameter.hyperparameter import Categorical, Real, Integer
 from ARLO.dataset.n_step_transition_buffer import get_n_step_info_from_demo
@@ -408,10 +409,11 @@ class PretrainingAC(Pretraining):
                         checkpoint_log_path=checkpoint_log_path, verbosity=verbosity, n_jobs=n_jobs, job_type=job_type)
         
                 
-        self.actor_approximator = None
+        self.mu_approximator = None
         self.optimizer = None
         self.demo_buffer = None
-        self.model = SACPolicy
+        self.model = None
+        self.policy = None
         self.pipeline_type='online'
         self.works_on_online_rl = True
         self.works_on_offline_rl = False
@@ -431,11 +433,8 @@ class PretrainingAC(Pretraining):
 
         self.fully_instantiated = False               
         self.info_MDP = None 
-        self.algo_object = None
         self.algo_params_upon_instantiation = copy.deepcopy(self.algo_params)
         self.use_n_step = False
-
-        self.core = None
             
         #seeds torch
         torch.manual_seed(self.seeder)
@@ -462,17 +461,25 @@ class PretrainingAC(Pretraining):
                               obj_name='l2_actor'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
             dict_of_params.update({ 'l2_actor': l2_actor})
-        
+        if('lambda1_pt' not in params.keys()):
+            lambda1_pt = Real(hp_name='lambda1_pt', current_actual_value=2, to_mutate=False, 
+                              obj_name='lambda1_pt'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
+                              checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
+            dict_of_params.update({ 'lambda1_pt': lambda1_pt})
         if('l2_critic' not in params.keys()):
             l2_critic = Real(hp_name='l2_critic', current_actual_value=1e-4, to_mutate=False, 
                               obj_name='l2_critic'+str(self.obj_name), seeder=self.seeder, log_mode=self.log_mode, 
                               checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
             dict_of_params.update({ 'l2_critic': l2_critic})
         if('pretrain_critic' not in params.keys()):
-            pretrain_critic = Categorical(hp_name='pretrain_critic', current_actual_value=False, to_mutate=False,
+            pretrain_critic = Categorical(hp_name='pretrain_critic', current_actual_value=True, to_mutate=False,
                                         obj_name='pretrain_critic', seeder=self.seeder, log_mode=self.log_mode,
                                         checkpoint_log_path=self.checkpoint_log_path, verbosity=self.verbosity)
             dict_of_params.update({'pretrain_critic': pretrain_critic})
+        if ('actor_network_sigma' in params.keys()):
+            self.model = SACFromDemonstration
+        else:
+            self.model = DDPGFromDemonstration
         self.algo_params = {**params, **dict_of_params}
         is_set_param_success = self.set_params(new_params=self.algo_params)
 
@@ -522,7 +529,7 @@ class PretrainingAC(Pretraining):
 
             for tmp_key in list(new_params.keys()):
                 #i do not want to change mdp_info or policy
-                if(tmp_key in ['batch_size','demo_batch_size', 'n_epochs_pretraining', 'l2_actor', 'pretrain_critic']):
+                if(tmp_key in ['batch_size','demo_batch_size', 'n_epochs_pretraining', 'l2_actor', 'pretrain_critic', 'lambda1_pt']):
                     tmp_structured_algo_params.update({tmp_key: new_params[tmp_key]})
                 if(tmp_key in ['input_shape', 'output_shape', 'n_actions']):
                     mu_regressor_dict.update({tmp_key: new_params[tmp_key]})
@@ -546,27 +553,30 @@ class PretrainingAC(Pretraining):
                 if(tmp_key == 'l2_critic'):
                     critic_regressor_dict['optimizer']['params'].update({'weight_decay': new_params[tmp_key]})
                 
+            #i need to un-pack structured_dict_of_values for the regressors
             mu_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=mu_regressor_dict)
-            sigma_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=sigma_regressor_dict)
             critic_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=critic_regressor_dict)
-            #i need to un-pack structured_dict_of_values for the regressor  
             self.mu_approximator = Regressor(TorchApproximator, **mu_regressor_params)
-            self.sigma_approximator = Regressor(TorchApproximator, **sigma_regressor_params)
             self.critic_approximator = Regressor(TorchApproximator, **critic_regressor_params, n_models=2)
-            policy_parameters = chain(self.mu_approximator.model.network.parameters(),
-                                  self.sigma_approximator.model.network.parameters())
-                
-            self.policy = SACPolicy(self.mu_approximator, self.sigma_approximator, self.info_MDP.action_space.low, self.info_MDP.action_space.high, -20,3)
-
+            
+            if('actor_network_sigma' in new_params.keys()):
+                sigma_regressor_params = self._select_current_actual_value_from_hp_classes(params_structured_dict=sigma_regressor_dict)
+                self.sigma_approximator = Regressor(TorchApproximator, **sigma_regressor_params)
+                actor_parameters = chain(self.mu_approximator.model.network.parameters(),
+                                  self.sigma_approximator.model.network.parameters())            
+                self.policy = SACPolicy(self.mu_approximator, self.sigma_approximator, self.info_MDP.action_space.low, self.info_MDP.action_space.high, -20,3)
+            else:
+                actor_parameters = self.mu_approximator.model.network.parameters()
             #setting all the pretrain parameters (class and lr to create regressor, lambdas as losses' weights)
             actor_optimizer_class = tmp_structured_algo_params['approximator_params']['optimizer']['actor_class'].current_actual_value
             lr = tmp_structured_algo_params['approximator_params']['optimizer']['params']['lr'].current_actual_value
             self.l2_actor = tmp_structured_algo_params['l2_actor'].current_actual_value
+            self.lambda1 = tmp_structured_algo_params['lambda1_pt'].current_actual_value
             self.batch_size = tmp_structured_algo_params['batch_size'].current_actual_value + tmp_structured_algo_params['demo_batch_size'].current_actual_value 
             self.pretrain_critic = tmp_structured_algo_params['pretrain_critic'].current_actual_value
             print('Params of pretraining (actor): ', self.obj_name, '\nlr: ', lr, '\nl2: ', self.l2_actor, '\n\n')
  
-            self.optimizer = actor_optimizer_class(policy_parameters, lr=lr, weight_decay=self.l2_actor)
+            self.optimizer = actor_optimizer_class(actor_parameters, lr=lr, weight_decay=self.l2_actor)
             
             self.algo_params = tmp_structured_algo_params
             
@@ -585,28 +595,30 @@ class PretrainingAC(Pretraining):
         
     def update_model(self, dataset):
         state, action, reward, next_state, absorbing, _ = parse_dataset(dataset=dataset)
-        action_new, _ = self.policy.compute_action_and_log_prob_t(state=state)
-        loss = torch.mean((action_new-torch.FloatTensor(action)).pow(2))
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        action_new = self.action(state)
+        loss = self.lambda1*torch.mean((action_new-torch.FloatTensor(action)).pow(2))
 
         if(self.pretrain_critic):
             q_next = self._next_q(next_state, absorbing)
             q = reward + self.info_MDP.gamma * q_next
             self.critic_approximator.fit(state, action, q)
             
-            action_new, _ = self.policy.compute_action_and_log_prob_t(state=state)
-            actor_loss = self._loss(state, action_new)
-            self.optimizer.zero_grad()
-            actor_loss.backward()
-            self.optimizer.step()
+            # action_new, _ = self.policy.compute_action_and_log_prob_t(state=state)
+            loss += self._loss(state, action_new)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def action(self, state):
+        if self.policy is not None:
+            action, _ = self.policy.compute_action_and_log_prob_t(state=state)
+            return action
+        return self.mu_approximator(state, output_tensor=True)
 
     def _next_q(self, next_state, absorbing):
-        a, log_prob_next = self.policy.compute_action_and_log_prob(next_state)
-
+        a = self.action(next_state)
         q = self.critic_approximator.predict(
-            next_state, a, prediction='min') - .2 * log_prob_next
+            next_state, a, prediction='min')
         q *= 1 - absorbing
 
         return q

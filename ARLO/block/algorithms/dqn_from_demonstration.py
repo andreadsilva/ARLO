@@ -39,7 +39,7 @@ class DQNFromDemonstration(DQN):
             state, action, reward, next_state, absorbing, _ = \
                 self._replay_memory.get(self._batch_size())
             d_state, d_action, d_reward, d_next_state, d_absorbing, _ = \
-                self._replay_memory.get(self._demo_batch_size())
+                self._demo_replay_memory.get(self._demo_batch_size())
             if self._clip_reward:
                 reward = np.clip(reward, -1, 1)
                 d_reward = np.clip(reward, -1, 1)

@@ -38,7 +38,7 @@ class DDPGFromDemonstration(DDPG):
             state, action, reward, next_state, absorbing, _ =\
                 self._replay_memory.get(self._batch_size())
             d_state, d_action, d_reward, d_next_state, d_absorbing, _ = \
-                self._replay_memory.get(self._demo_batch_size)
+                self._demo_replay_memory.get(self._demo_batch_size)
             state = np.vstack([state,d_state])
             action = np.vstack([action,d_action])
             reward = np.concatenate([reward,d_reward])
@@ -68,7 +68,7 @@ class DDPGFromDemonstration(DDPG):
     def _bc_loss(self, state, action):
         pred_action = self._actor_approximator(state, output_tensor=True, **self._actor_predict_params)
         # pred_action = pred_action.reshape(-1, 1)
-        return torch.mean((pred_action- torch.FloatTensor(action.reshape(-1,1))).pow(2))
+        return torch.mean(pred_action.reshape(-1, self.mdp_info.action_space.shape[0])- torch.FloatTensor(action.reshape(-1, self.mdp_info.action_space.shape[0])).pow(2))
 
     def set_demo_replay_memory(self, demo_replay_memory):
         self._demo_replay_memory = demo_replay_memory

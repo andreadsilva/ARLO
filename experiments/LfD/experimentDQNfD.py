@@ -1,12 +1,9 @@
-from ARLO.block import ModelGenerationMushroomOnlineDQN, ModelGenerationMushroomOnlineDQNfD
+from ARLO.block import ModelGenerationMushroomOnlineDQNfD
 from ARLO.rl_pipeline import OnlineRLPipeline
-from ARLO.metric import DiscountedReward, SomeSpecificMetric
-from ARLO.environment import BaseCarOnHill, BaseCartPole
+from ARLO.metric import DiscountedReward
+from ARLO.environment import BaseCarOnHill
 from ARLO.hyperparameter import Integer, Categorical, Real
 from ARLO.dataset import TabularDataSet
-from ARLO.input_loader import LoadSameTrainDataAndEnv, LoadUniformSubSampleWithReplacementAndEnv
-from ARLO.tuner import TunerGenetic
-from ARLO.block import AutoModelGeneration
 from mushroom_rl.approximators.parametric import TorchApproximator
 from mushroom_rl.utils.parameters import LinearParameter
 from mushroom_rl.utils.replay_memory import ReplayMemory
@@ -15,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 
 def parse_file(f):
@@ -138,7 +136,7 @@ if __name__ == '__main__':
     dir_chkpath = './Logg.txt'
     n_agents = 3
 
-    my_env = BaseCartPole(obj_name='my_cartpole', gamma=.99, horizon=1000)
+    my_env = BaseCarOnHill(obj_name='my_car', gamma=.99, horizon=1000)
     my_env.seed(2)
     # Extracting expert demonstrations
     f = open('/home/andrea/ARLO/experiences.txt', 'r')
@@ -158,31 +156,35 @@ if __name__ == '__main__':
                                         current_actual_value=torch.optim.Adam) 
         
         lr = Real(hp_name='lr', obj_name='optimizer_lr_'+'DQfD', 
-                    current_actual_value=1e-3, range_of_values=[3e-4, 3e-3], to_mutate=True, seeder=2, 
-                    log_mode='console', checkpoint_log_path='./logg.txt', verbosity=3)
+                    current_actual_value=1e-3, seeder=2, 
+                    log_mode='console', verbosity=3)
                     
         critic_loss = Categorical(hp_name='critic_loss', obj_name='critic_loss_'+'DQfD', 
                                     current_actual_value=F.smooth_l1_loss)
         
         batch_size = Integer(hp_name='batch_size', obj_name='batch_size_'+'DQfD', 
-                                current_actual_value=32, range_of_values=[16, 128], to_mutate=True, seeder=2, 
-                                log_mode='console', checkpoint_log_path='./logg.txt', verbosity=3)
+                                current_actual_value=32, seeder=2, 
+                                log_mode='console', verbosity=3)
         
+        demo_batch_size = Integer(hp_name='batch_size', obj_name='demo_batch_size_'+'DQfD', 
+                                current_actual_value=8, seeder=2, 
+                                log_mode='console', verbosity=3)
+
         target_update_frequency = Integer(hp_name='target_update_frequency', current_actual_value=250, 
                                             range_of_values=[100,1000], to_mutate=True, 
                                             obj_name='target_update_frequency_'+'DQfD', seeder=2, 
-                                            log_mode='console', checkpoint_log_path='./logg.txt', 
+                                            log_mode='console', 
                                             verbosity=3)
         
         initial_replay_size = Integer(hp_name='initial_replay_size', current_actual_value=2000, 
                                         range_of_values=[1000, 10000], 
                                         obj_name='initial_replay_size_'+'DQfD',
-                                        to_mutate=False, seeder=2, log_mode='console', 
-                                        checkpoint_log_path='./logg.txt', verbosity=3)
+                                        seeder=2, log_mode='console', 
+                                        verbosity=3)
         
-        max_replay_size = Integer(hp_name='max_replay_size', current_actual_value=10000, range_of_values=[10000, 1000000],
-                                    obj_name='max_replay_size_'+'DQfD', to_mutate=False, seeder=2, 
-                                    log_mode='console', checkpoint_log_path='./logg.txt', 
+        max_replay_size = Integer(hp_name='max_replay_size', current_actual_value=10000,
+                                    obj_name='max_replay_size_'+'DQfD', seeder=2, 
+                                    log_mode='console', 
                                     verbosity=3)
         
         replay_memory = Categorical(hp_name='replay_memory', obj_name='replay_memory_'+'DQfD', 
@@ -190,59 +192,58 @@ if __name__ == '__main__':
                                                                         max_size=max_replay_size.current_actual_value))
             
         clip_reward = Categorical(hp_name='clip_reward', obj_name='clip_reward_'+'DQfD', 
-                                    current_actual_value=False, possible_values=[True, False], to_mutate=False, 
-                                    seeder=2, log_mode='console', checkpoint_log_path='./logg.txt', 
+                                    current_actual_value=False,
+                                    seeder=2, log_mode='console', 
                                     verbosity=3)
         
-        n_epochs = Integer(hp_name='n_epochs', current_actual_value=7, range_of_values=[5,10], to_mutate=True, 
+        n_epochs = Integer(hp_name='n_epochs', current_actual_value=0, 
                             obj_name='n_epochs_'+'DQfD', seeder=2, log_mode='console', 
-                            checkpoint_log_path='./logg.txt', verbosity=3)
+                            verbosity=3)
         
-        n_steps = Integer(hp_name='n_steps', current_actual_value=None, to_mutate=False, 
+        n_steps = Integer(hp_name='n_steps', current_actual_value=None,
                             obj_name='n_steps_'+'DQfD', seeder=2, log_mode='console', 
-                            checkpoint_log_path='./logg.txt', verbosity=3)
+                            verbosity=3)
         
         n_steps_per_fit = Integer(hp_name='n_steps_per_fit', current_actual_value=None, 
-                                    to_mutate=False, obj_name='n_steps_per_fit_'+'DQfD', seeder=2,
-                                    log_mode='console', checkpoint_log_path='./logg.txt', 
+                                     obj_name='n_steps_per_fit_'+'DQfD', seeder=2,
+                                    log_mode='console', 
                                     verbosity=3)
         
-        n_episodes = Integer(hp_name='n_episodes', current_actual_value=15, range_of_values=[10,100], to_mutate=False, 
+        n_episodes = Integer(hp_name='n_episodes', current_actual_value=500,
                                 obj_name='n_episodes_'+'DQfD', seeder=2, log_mode='console', 
-                                checkpoint_log_path='./logg.txt', verbosity=3)
+                                verbosity=3)
         
-        n_episodes_per_fit = Integer(hp_name='n_episodes_per_fit', current_actual_value=1, range_of_values=[1,5], 
-                                        to_mutate=True, obj_name='n_episodes_per_fit_'+'DQfD', 
+        n_episodes_per_fit = Integer(hp_name='n_episodes_per_fit', current_actual_value=10, obj_name='n_episodes_per_fit_'+'DQfD', 
                                         seeder=2, log_mode='console', 
-                                        checkpoint_log_path='./logg.txt', verbosity=3)
+                                        verbosity=3)
 
         epsilon = Categorical(hp_name='epsilon', obj_name='epsilon_'+'DQfD', 
                                 current_actual_value=LinearParameter(value=1, threshold_value=0.01, n=1000000))
 
-        n_epochs_pretraining = Integer(hp_name='n_epochs_pretraining', current_actual_value=400, range_of_values=[300,500], to_mutate=True, 
+        n_epochs_pretraining = Integer(hp_name='n_epochs_pretraining', current_actual_value=400, 
                             obj_name='n_epochs_'+'DQfD', seeder=2, log_mode='console', 
-                            checkpoint_log_path='./logg.txt', verbosity=3)
+                            verbosity=3)
         
         lambda1 = Real(hp_name='lambda1', obj_name='lambda1_'+'DQfD', 
-                    current_actual_value=1, range_of_values=[0.5, 1.5], to_mutate=False, seeder=2, 
-                    log_mode='console', checkpoint_log_path='./logg.txt', verbosity=3)
+                    current_actual_value=1, seeder=2, 
+                    log_mode='console',  verbosity=3)
 
         lambda2 = Real(hp_name='lambda2', obj_name='lambda2_'+'DQfD', 
-                    current_actual_value=1, range_of_values=[0.7, 1.3], to_mutate=True, seeder=2, 
-                    log_mode='console', checkpoint_log_path='./logg.txt', verbosity=3)
+                    current_actual_value=1, seeder=2, 
+                    log_mode='console', verbosity=3)
 
         lambda3 = Real(hp_name='lambda3', obj_name='lambda3_'+'DQfD', 
-                    current_actual_value=1e-4, range_of_values=[1e-5, 1e-3], to_mutate=False, seeder=2, 
-                    log_mode='console', checkpoint_log_path='./logg.txt', verbosity=3)
+                    current_actual_value=1e-4,  seeder=2, 
+                    log_mode='console', verbosity=3)
 
         use_n_step = Categorical(hp_name='use_n_step', obj_name='critic_loss_'+'DQfD', 
-                                    current_actual_value=False, possible_values=[True, False], to_mutate=False)
+                                    current_actual_value=False)
 
-        n_step_lookahead = Integer(hp_name='n_steps', current_actual_value=10, range_of_values=[5,12], to_mutate=False, 
+        n_step_lookahead = Integer(hp_name='n_steps', current_actual_value=10, 
                             obj_name='n_epochs_'+'DQfD', seeder=2, log_mode='console', 
-                            checkpoint_log_path='./logg.txt', verbosity=3)
+                             verbosity=3)
 
-        margin = Real(hp_name='margin', current_actual_value=0.6, range_of_values=[0.2, 2], to_mutate=True, 
+        margin = Real(hp_name='margin', current_actual_value=0.6,
                               obj_name='margin'+'DQfD', seeder=2, log_mode='console', 
                               checkpoint_log_path='/logg.txt', verbosity=3)
         
@@ -251,7 +252,8 @@ if __name__ == '__main__':
                             'class': optimizer_class, 
                             'lr': lr, 
                             'loss': critic_loss, 
-                            'batch_size': batch_size, 
+                            'batch_size': batch_size,
+                            'demo_batch_size': demo_batch_size, 
                             'target_update_frequency': target_update_frequency,
                             'replay_memory': replay_memory, 
                             'initial_replay_size': initial_replay_size,
@@ -277,36 +279,9 @@ if __name__ == '__main__':
     my_dqfd = ModelGenerationMushroomOnlineDQNfD(eval_metric=DiscountedReward(obj_name='dqfd_metric', n_episodes=10, batch=True,
                                             log_mode=my_log_mode, checkpoint_log_path=dir_chkpath), 
                                             obj_name='my_dqfd', deterministic_output_policy=True, log_mode=my_log_mode, algo_params=dict_of_params,
-                                            checkpoint_log_path=dir_chkpath, n_jobs=16, seeder=2)
+                                            checkpoint_log_path=dir_chkpath, n_jobs=4, seeder=2)
 
-    # my_dqn = ModelGenerationMushroomOnlineDQN(eval_metric=DiscountedReward(obj_name='dqn_metric', n_episodes=10, batch=True), obj_name='my_dqn', deterministic_output_policy=True)
-
-    # my_sac = ModelGenerationMushroomOnlineSAC(eval_metric=DiscountedReward(obj_name='sac_metric', n_episodes=100, batch=False,
-    #                                             log_mode=my_log_mode, checkpoint_log_path=dir_chkpath), 
-    #                                           obj_name='my_sac', regressor_type='generic_regressor', log_mode=my_log_mode, 
-    #                                           checkpoint_log_path=dir_chkpath, n_jobs=16, seeder=current_seed, 
-    #                                           algo_params=dict_of_params_sac,
-    #                                           deterministic_output_policy=False)
-
-    print("Dataset length per agent: ", len(dataset_expert)//n_agents)
-                                                                                         
-    tuner_dict = dict(block_to_opt=my_dqfd, n_agents=n_agents, n_generations=3, n_jobs=1, job_type='thread', seeder=2,
-                      eval_metric=DiscountedReward(obj_name='discounted_rew_genetic_algo', n_episodes=10, batch=True, 
-                                                   n_jobs=1, job_type='process', log_mode=my_log_mode, checkpoint_log_path=dir_chkpath),
-                      input_loader=LoadSameTrainDataAndEnv(obj_name='input_loader_train_and_env'), obj_name='genetic_algo', prob_point_mutation=0.5, 
-                      output_save_periodicity=1, log_mode=my_log_mode, checkpoint_log_path=dir_chkpath, tuning_mode='no_elitism')
-    
-    tuner = TunerGenetic(**tuner_dict)
-    
-    auto_model_gen = AutoModelGeneration(eval_metric=DiscountedReward(obj_name='discounted_rew_auto_model_gen', n_episodes=10,
-                                                                      batch=True, n_jobs=1, job_type='process', 
-                                                                      log_mode=my_log_mode, checkpoint_log_path=dir_chkpath),
-                                         obj_name='auto_model_gen', tuner_blocks_dict={'genetic_tuner': tuner}, 
-                                         log_mode=my_log_mode, checkpoint_log_path=dir_chkpath)
-
-
-
-    my_pipeline = OnlineRLPipeline(list_of_block_objects=[auto_model_gen],
+    my_pipeline = OnlineRLPipeline(list_of_block_objects=[my_dqfd],
                                    eval_metric=DiscountedReward(obj_name='pipeline_metric', n_episodes=10, batch=True), 
                                    obj_name='OnlinePipeline') 
 
@@ -317,18 +292,33 @@ if __name__ == '__main__':
 
     done = False
     ns = my_env.reset()
-    steps=0
-    discount = 1
-    gamma = my_env._mdp_info.gamma
-    my_env.render('human')
-    episode = ['The Phantom Menace', 'Attack of the Clones', 'The Revenge of the Sith', 'A New Hope', 'The Empire Strikes Back']
-    for i in range(5):
-        print('\n', episode[i])
-        while not done:
-            ns , rew,  done, info = my_env.step(np.argmax(my_policy.draw_action(ns)))
-            steps +=1
-            discount *=gamma
-        done=False
-        ns= my_env.reset()
-        print('\nTotal steps: ', steps)
-        steps=0
+    while not done:
+        action = my_policy.draw_action(ns)
+        ns, r, done = my_env.step(action=action)
+        my_env.render()
+    evals = my_dqfd.dict_of_evals
+
+    """
+    This method plots and saves the dict_of_evals of the block.
+    """
+    
+    x = np.array(list(evals.keys()))
+    if(len(x) == 0):
+        exc_msg = 'The \'dict_of_evals\' is empty!'
+        print(exc_msg)
+        raise ValueError(exc_msg)
+        
+    evals_values = list(evals.values())
+    y = np.array([np.mean(evals_values[i]) for i in range(len(evals_values))])
+    
+    std_dev = np.array([np.std(evals_values[i]) for i in range(len(evals_values))])
+    
+    plt.figure()
+    plt.xlabel('Environment Steps')
+    plt.ylabel('Average Discounted Reward')
+    plt.title('Average Discounted Reward and Standard Deviation for SAC from demonstration')
+    plt.grid(True)
+    plt.plot(x, y, color='#FF9860')
+    if(len(evals_values[0]) > 1):
+        plt.fill_between(x, y-std_dev, y+std_dev, alpha=0.5, edgecolor='#CC4F1B', facecolor='#FF9860')
+    plt.savefig('./DQNfD/res.png') 

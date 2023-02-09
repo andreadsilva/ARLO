@@ -37,13 +37,12 @@ class SACFromDemonstration(SAC):
             state, action, reward, next_state, absorbing, _ = \
                 self._replay_memory.get(self._batch_size())
             d_state, d_action, d_reward, d_next_state, d_absorbing, _ = \
-                self._replay_memory.get(self._demo_batch_size)
+                self._demo_replay_memory.get(self._demo_batch_size)
             state = np.vstack([state,d_state])
             action = np.vstack([action,d_action])
             reward = np.concatenate([reward,d_reward])
             next_state =np.vstack([next_state,d_next_state])
             absorbing = np.concatenate([absorbing,d_absorbing])
-
             if self._replay_memory.size > self._warmup_transitions():
                 action_new, log_prob = self.policy.compute_action_and_log_prob_t(state)
                 loss = self._loss(state, action_new, log_prob)
@@ -60,8 +59,8 @@ class SACFromDemonstration(SAC):
                                 self._target_critic_approximator)
 
             # self.policy._mu_approximator.fit(state, action)
-            loss = self._bc_loss(d_state, d_action)
-            self._optimize_actor_parameters(self._lambda1*loss)
+            bc_loss = self._bc_loss(d_state, d_action)
+            self._optimize_actor_parameters(self._lambda1*bc_loss)
 
     def _bc_loss(self, state, action):
         pred_action, _ = self.policy.compute_action_and_log_prob_t(state)
